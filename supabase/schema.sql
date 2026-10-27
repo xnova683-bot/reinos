@@ -629,14 +629,19 @@ declare
   px numeric := least(0.995, greatest(0.005, nx));
   py numeric := least(0.995, greatest(0.005, ny));
   reg integer;
+  reg_locked boolean := false;
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
-  select r.id into reg
+  select r.id, r.locked into reg, reg_locked
   from public.regions r
   where px between (r.bbox->>'x0')::numeric and (r.bbox->>'x1')::numeric
     and py between (r.bbox->>'y0')::numeric and (r.bbox->>'y1')::numeric
   order by r.id
   limit 1;
+
+  if reg is not null and coalesce(reg_locked, false) then
+    raise exception 'region locked';
+  end if;
 
   update public.profiles
     set x = px,

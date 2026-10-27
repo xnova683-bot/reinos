@@ -1632,7 +1632,11 @@
     return api("/rest/v1/rpc/" + fn, { method: "POST", token: session.token, body: body })
       .then(function (result) {
         if (!result.ok) {
-          pvpResult = { ok: false, text: cloudErrorMessage(result) };
+          var adminError = String(cloudErrorMessage(result));
+          if (adminError.indexOf("region locked") !== -1) {
+            adminError = "Esa región está bloqueada: desbloquéala antes de mover aldeas allí.";
+          }
+          pvpResult = { ok: false, text: adminError };
           renderGame();
           return;
         }

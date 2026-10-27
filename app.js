@@ -1851,8 +1851,12 @@
       .then(function (result) {
         if (!result.ok) {
           var adminError = String(cloudErrorMessage(result));
-          if (adminError.indexOf("region locked") !== -1) {
-            adminError = "Esa región está bloqueada: desbloquéala antes de mover aldeas allí.";
+          if (adminError.indexOf("outside region") !== -1) {
+            adminError = "El castillo debe quedar dentro de su propia región.";
+          } else if (adminError.indexOf("castle not found") !== -1) {
+            adminError = "Ese castillo ya no existe.";
+          } else if (adminError.indexOf("village not found") !== -1) {
+            adminError = "Esa aldea ya no existe.";
           } else if (adminError.indexOf("password required") !== -1) {
             adminError = "Escribe una contraseña para activar el mantenimiento.";
           }
@@ -2462,6 +2466,7 @@
   }
 
   function initMap() {
+    itemDrag = null;
     mapWrapEl = document.getElementById("worldmap");
     mapStageEl = document.getElementById("worldmap-stage");
     if (!mapWrapEl || !mapStageEl) return;
@@ -2494,7 +2499,22 @@
       });
     }
 
+    function beginItemDrag(kind, id, node, event) {
+      itemDrag = {
+        kind: kind,
+        id: id,
+        node: node,
+        pointerId: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+      };
+      if (mapWrapEl.setPointerCapture) {
+        try { mapWrapEl.setPointerCapture(event.pointerId); } catch (err) {}
+      }
+    }
+
     mapWrapEl.addEventListener("pointerdown", function (event) {
+      if (event.button !== undefined && event.button !== 0) return;
       if (adminMode && session && session.isAdmin) {
         var target = event.target;
         var point = target && target.closest ? target.closest("[data-region-point]") : null;
@@ -2502,19 +2522,19 @@
         var npc = target && target.closest ? target.closest("[data-map-npc]") : null;
         var castleNode = target && target.closest ? target.closest("[data-map-castle]") : null;
         if (point) {
-          itemDrag = { kind: "region", id: point.getAttribute("data-region-point"), x: event.clientX, y: event.clientY };
+          beginItemDrag("region", point.getAttribute("data-region-point"), point, event);
           return;
         }
         if (marker) {
-          itemDrag = { kind: "village", id: marker.getAttribute("data-map-player"), x: event.clientX, y: event.clientY };
+          beginItemDrag("village", marker.getAttribute("data-map-player"), marker, event);
           return;
         }
         if (npc) {
-          itemDrag = { kind: "npc", id: npc.getAttribute("data-map-npc"), x: event.clientX, y: event.clientY };
+          beginItemDrag("npc", npc.getAttribute("data-map-npc"), npc, event);
           return;
         }
         if (castleNode) {
-          itemDrag = { kind: "castle", id: castleNode.getAttribute("data-map-castle"), x: event.clientX, y: event.clientY };
+          beginItemDrag("castle", castleNode.getAttribute("data-map-castle"), castleNode, event);
           return;
         }
       }
@@ -2535,14 +2555,13 @@
 
     mapWrapEl.addEventListener("pointermove", function (event) {
       if (itemDrag) {
-        if (itemDrag.kind === "region") {
-          var px = event.clientX - itemDrag.x;
-          var py = event.clientY - itemDrag.y;
-          var pointEl = mapWrapEl.querySelectorAll('[data-region-point="' + itemDrag.id + '"]')[0];
-          if (pointEl && pointEl.style) {
-            pointEl.style.transform =
-              "translate(calc(-50% + " + px + "px), calc(-50% + " + py + "px)) scale(var(--inv, 1))";
-          }
+        if (event.pointerId !== itemDrag.pointerId) return;
+        var px = event.clientX - itemDrag.x;
+        var py = event.clientY - itemDrag.y;
+        if (itemDrag.node && itemDrag.node.style) {
+          var yBase = itemDrag.kind === "region" ? "-50%" : "-100%";
+          itemDrag.node.style.transform =
+            "translate(calc(-50% + " + px + "px), calc(" + yBase + " + " + py + "px)) scale(var(--inv, 1))";
         }
         return;
       }
@@ -2572,12 +2591,16 @@
 
     function endPointer(event) {
       if (itemDrag) {
+        if (event.pointerId !== itemDrag.pointerId) return;
         var drag = itemDrag;
         itemDrag = null;
+        if (drag.node && drag.node.style) drag.node.style.transform = "";
+        if (mapWrapEl.releasePointerCapture) {
+          try { mapWrapEl.releasePointerCapture(event.pointerId); } catch (err) {}
+        }
+        if (event.type === "pointercancel") return;
         var dx = (event.clientX - drag.x) / (MAP_W * mapTransform.scale);
         var dy = (event.clientY - drag.y) / (MAP_H * mapTransform.scale);
-        var pointEl = mapWrapEl.querySelectorAll('[data-region-point="' + drag.id + '"]')[0];
-        if (pointEl && pointEl.style) pointEl.style.transform = "";
         if (Math.abs(dx) + Math.abs(dy) > 0.002) {
           if (drag.kind === "region") {
             adminAction("admin_move_region", { rid: Number(drag.id), dx: dx, dy: dy });
@@ -2687,6 +2710,7 @@
         });
       });
       point.addEventListener("click", function () {
+        if (adminMode) return;
         if (regionLongPressed) {
           regionLongPressed = false;
           return;

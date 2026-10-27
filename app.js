@@ -1380,6 +1380,11 @@
   var mapStageEl = null;
   var mapTransform = { x: 0, y: 0, scale: 1 };
   var mapFitScale = 1;
+  var openRegionId = null;
+  var mapFocusedRegion = null;
+  var regionHintId = null;
+  var regionPressTimer = null;
+  var regionLongPressed = false;
 
   function isCloud() {
     return !!(session && session.mode === "cloud" && session.token);
@@ -1435,6 +1440,9 @@
     pvpTarget = null;
     pvpResult = null;
     adminMode = false;
+    openRegionId = null;
+    mapFocusedRegion = null;
+    regionHintId = null;
   }
 
   function refreshOwnProfile() {
@@ -1575,61 +1583,8 @@
 
   function mapView() {
     var power = armyPower(state);
-    var unlocked = {};
-    world.regions.forEach(function (region) {
-      if (!region.locked) unlocked[region.id] = true;
-    });
-
-    var polygons = world.regions
-      .map(function (region) {
-        return (
-          '<polygon class="region-poly' + (region.locked ? " locked" : "") + '" data-region="' + region.id + '" ' +
-            'points="' + polygonPoints(region) + '"></polygon>'
-        );
-      })
-      .join("");
-
-    var regionTags = world.regions
-      .map(function (region) {
-        var c = polygonCentroid(region);
-        return (
-          '<div class="region-tag' + (region.locked ? " locked" : "") + '" data-region-tag="' + region.id + '" ' +
-            'data-mx="' + c.x + '" data-my="' + c.y + '" ' +
-            'style="left:' + (c.x * 100).toFixed(2) + "%;top:" + (c.y * 100).toFixed(2) + '%">' +
-            '<b>' + escapeHtml(region.name) + "</b>" +
-            '<span>' + (region.locked ? "Bloqueada" : num(region.villages) + "/" + num(region.capacity) + " aldeas") + "</span>" +
-          "</div>"
-        );
-      })
-      .join("");
-
-    var players = world.players.filter(function (player) {
-      if (String(player.id) === String(session.userId)) return false;
-      if (unlocked[player.region] === undefined) return false;
-      return typeof player.x === "number" && typeof player.y === "number";
-    });
-
-    var playerMarkers = players
-      .map(function (player) {
-        var tag = (player.online ? "" : " offline") + (player.shield ? " shielded" : "");
-        return (
-          '<button class="marker player ' + player.race + tag + '" data-map-player="' + escapeHtml(player.id) + '" ' +
-            'data-mx="' + player.x + '" data-my="' + player.y + '" ' +
-            'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) + '" ' +
-            'style="left:' + (player.x * 100).toFixed(2) + "%;top:" + (player.y * 100).toFixed(2) + '%">' +
-            '<span class="mlabel">' + (player.shield ? "⛨ " : "") + escapeHtml(player.name) + "</span>" +
-            '<span class="pin"></span>' +
-          "</button>"
-        );
-      })
-      .join("");
-
-    var mePos = session && session.village ? session.village : { x: 0.5, y: 0.5 };
-    var villageMarker =
-      '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
-        'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
-        '<span class="mlabel">Tu aldea</span><span class="pin"></span>' +
-      "</div>";
+    var open = openRegionId ? regionById(openRegionId) : null;
+    if (openRegionId && !open) openRegionId = null;
 
     var openCount = world.regions.filter(function (region) {
       return !region.locked;
@@ -1642,7 +1597,62 @@
             ? world.online + " en línea · " + world.players.length + " aldeas · " +
               openCount + "/" + world.regions.length + " regiones abiertas"
             : "Conectando con el mundo…")
-      : "Modo local · conecta con Supabase para ver el mundo compartido";
+      : "Conecta con Supabase para ver el mundo compartido";
+
+    var mePos = session && session.village ? session.village : { x: 0.5, y: 0.5 };
+    var myName = (session && session.username) || "Tu aldea";
+    var meMarker =
+      '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
+        'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
+        '<span class="mlabel">' + escapeHtml(myName) + '</span><span class="pin"></span>' +
+      "</div>";
+
+    var layer = "";
+    if (!world.regions.length) {
+      layer =
+        '<div class="map-empty-note">' +
+          (world.error ? escapeHtml(world.error) : "Cargando regiones del mundo…") +
+        "</div>" + meMarker;
+    } else if (!open) {
+      layer = world.regions
+        .map(function (region) {
+          var c = polygonCentroid(region);
+          var full = Number(region.villages) >= Number(region.capacity);
+          return (
+            '<button class="region-point' + (region.locked ? " locked" : "") + (full ? " full" : "") +
+              (regionHintId === region.id || adminMode ? " hint" : "") + '" ' +
+              'data-region-point="' + region.id + '" data-region-name="' + escapeHtml(region.name) + '" ' +
+              'data-mx="' + c.x + '" data-my="' + c.y + '" ' +
+              'style="left:' + (c.x * 100).toFixed(2) + "%;top:" + (c.y * 100).toFixed(2) + '%">' +
+              '<span class="rp-dot">' + (region.locked ? "&#128274;" : num(region.villages)) + "</span>" +
+              '<span class="rp-name">' + escapeHtml(region.name) + "</span>" +
+              '<span class="rp-count">' + (region.locked ? "Bloqueada" : num(region.villages) + "/" + num(region.capacity)) + "</span>" +
+            "</button>"
+          );
+        })
+        .join("");
+    } else {
+      var players = world.players.filter(function (player) {
+        if (String(player.id) === String(session.userId)) return false;
+        return String(player.region) === String(open.id) &&
+          typeof player.x === "number" && typeof player.y === "number";
+      });
+      layer = players
+        .map(function (player) {
+          var tag = (player.online ? "" : " offline") + (player.shield ? " shielded" : "");
+          return (
+            '<button class="marker player ' + player.race + tag + '" data-map-player="' + escapeHtml(player.id) + '" ' +
+              'data-mx="' + player.x + '" data-my="' + player.y + '" ' +
+              'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) + '" ' +
+              'style="left:' + (player.x * 100).toFixed(2) + "%;top:" + (player.y * 100).toFixed(2) + '%">' +
+              '<span class="mlabel">' + (player.shield ? "&#9930; " : "") + escapeHtml(player.name) + "</span>" +
+              '<span class="pin"></span>' +
+            "</button>"
+          );
+        })
+        .join("") +
+        (String(session.region) === String(open.id) ? meMarker : "");
+    }
 
     var adminPanel = "";
     if (session && session.isAdmin) {
@@ -1668,7 +1678,7 @@
               })
               .join("") +
           "</div>" +
-          (adminMode ? '<div class="admin-hint">Arrastra una región o una aldea para moverla.</div>' : "") +
+          (adminMode ? '<div class="admin-hint">Arrastra un punto de región en el mundo o una aldea dentro de su región.</div>' : "") +
           '<div class="admin-phones"><b>Jugadores registrados (' + world.phones.length + ")</b>" +
             (world.phones.length
               ? world.phones
@@ -1730,38 +1740,60 @@
 
     return (
       '<div class="panel map-panel">' +
-        '<div class="panel-head"><h2>Mapa del mundo</h2><span class="hint">' + escapeHtml(statusText) + "</span></div>" +
+        '<div class="panel-head"><h2>' + (open ? escapeHtml(open.name) : "Mapa del mundo") + "</h2>" +
+          '<span class="hint">' + escapeHtml(open
+            ? num(open.villages) + "/" + num(open.capacity) + " aldeas · " + (open.locked ? "bloqueada" : "abierta")
+            : statusText) + "</span></div>" +
         '<div class="map-tools">' +
+          (open ? '<button class="btn" id="map-back-btn">&#8592; Mundo</button>' : "") +
           '<button class="btn" data-map-zoom="in">+</button>' +
-          '<button class="btn" data-map-zoom="out">−</button>' +
+          '<button class="btn" data-map-zoom="out">&#8722;</button>' +
           '<button class="btn" data-map-center="1">Centrar</button>' +
-          '<span class="map-hint" id="map-hint">' +
-            (adminMode ? "Arrastra regiones y aldeas." : "Toca una aldea enemiga para atacarla.") +
+          '<span class="map-hint">' +
+            (adminMode
+              ? "Arrastra para mover."
+              : open
+                ? "Toca una aldea para atacarla."
+                : "Toca una región para entrar. Mantén presionada para ver su nombre.") +
           "</span>" +
         "</div>" +
         adminPanel +
         targetCard +
         resultCard +
-        '<div class="worldmap' + (adminMode ? " editing" : "") + '" id="worldmap">' +
-          '<div class="worldmap-stage" id="worldmap-stage" style="width:' + MAP_W + "px;height:" + MAP_H + 'px">' +
+        '<div class="worldmap' + (adminMode ? " editing" : "") + (open ? " labels" : "") + '" id="worldmap">' +
+          '<div class="worldmap-stage' + (open ? " labels" : "") + '" id="worldmap-stage" ' +
+            'style="width:' + MAP_W + "px;height:" + MAP_H + 'px">' +
             '<div class="map-bg" aria-hidden="true"></div>' +
             '<img class="map-image" src="' + escapeHtml(mapImageUrl()) + '" alt="" draggable="false" ' +
               'onerror="this.style.display=\'none\'" />' +
-            '<svg class="region-svg" viewBox="0 0 100 100" preserveAspectRatio="none">' + polygons + "</svg>" +
-            regionTags +
-            playerMarkers +
-            villageMarker +
+            layer +
           "</div>" +
         "</div>" +
         '<div class="map-legend">' +
           '<span><i class="dot open"></i>Región abierta</span>' +
           '<span><i class="dot locked"></i>Bloqueada</span>' +
-          '<span><i class="dot player"></i>Jugador</span>' +
+          '<span><i class="dot player"></i>Aldea</span>' +
           '<span class="grow"></span><span class="hint">Tu poder: ' + num(power) + "</span>" +
         "</div>" +
         feed +
       "</div>"
     );
+  }
+
+  function focusRegion(region) {
+    if (!mapWrapEl || !region) return;
+    var w = mapWrapEl.clientWidth || 900;
+    var h = mapWrapEl.clientHeight || 480;
+    var bb = region.bbox || { x0: 0, y0: 0, x1: 1, y1: 1 };
+    var bw = Math.max(0.02, Number(bb.x1) - Number(bb.x0));
+    var bh = Math.max(0.02, Number(bb.y1) - Number(bb.y0));
+    mapFitScale = Math.max(w / MAP_W, h / MAP_H);
+    var scale = Math.min(w / (bw * MAP_W * 1.35), h / (bh * MAP_H * 1.5));
+    mapTransform.scale = Math.max(mapFitScale * 1.4, scale);
+    mapTransform.x = w / 2 - ((Number(bb.x0) + Number(bb.x1)) / 2) * MAP_W * mapTransform.scale;
+    mapTransform.y = h / 2 - ((Number(bb.y0) + Number(bb.y1)) / 2) * MAP_H * mapTransform.scale;
+    clampMapPan();
+    applyMap();
   }
 
   function clampMapPan() {
@@ -1790,7 +1822,7 @@
     var h = mapWrapEl.clientHeight || 480;
     var nodes;
     try {
-      nodes = mapWrapEl.querySelectorAll(".marker, .region-tag");
+      nodes = mapWrapEl.querySelectorAll(".marker, .region-point");
     } catch (err) {
       return;
     }
@@ -1864,6 +1896,15 @@
       applyMap();
     }
 
+    var focusRegionObj = openRegionId ? regionById(openRegionId) : null;
+    if (focusRegionObj && mapFocusedRegion !== openRegionId) {
+      focusRegion(focusRegionObj);
+      mapFocusedRegion = openRegionId;
+    } else if (!focusRegionObj && mapFocusedRegion) {
+      fitMap();
+      mapFocusedRegion = null;
+    }
+
     function pointerList() {
       return Object.keys(pointers).map(function (id) {
         return pointers[id];
@@ -1873,10 +1914,10 @@
     mapWrapEl.addEventListener("pointerdown", function (event) {
       if (adminMode && session && session.isAdmin) {
         var target = event.target;
-        var poly = target && target.closest ? target.closest(".region-poly") : null;
+        var point = target && target.closest ? target.closest("[data-region-point]") : null;
         var marker = target && target.closest ? target.closest("[data-map-player]") : null;
-        if (poly) {
-          itemDrag = { kind: "region", id: poly.getAttribute("data-region"), x: event.clientX, y: event.clientY };
+        if (point) {
+          itemDrag = { kind: "region", id: point.getAttribute("data-region-point"), x: event.clientX, y: event.clientY };
           return;
         }
         if (marker) {
@@ -1902,10 +1943,13 @@
     mapWrapEl.addEventListener("pointermove", function (event) {
       if (itemDrag) {
         if (itemDrag.kind === "region") {
-          var dx = (event.clientX - itemDrag.x) / (MAP_W * mapTransform.scale);
-          var dy = (event.clientY - itemDrag.y) / (MAP_H * mapTransform.scale);
-          var poly = mapWrapEl.querySelectorAll('[data-region="' + itemDrag.id + '"]')[0];
-          if (poly) poly.setAttribute("transform", "translate(" + dx * 100 + "," + dy * 100 + ")");
+          var px = event.clientX - itemDrag.x;
+          var py = event.clientY - itemDrag.y;
+          var pointEl = mapWrapEl.querySelectorAll('[data-region-point="' + itemDrag.id + '"]')[0];
+          if (pointEl && pointEl.style) {
+            pointEl.style.transform =
+              "translate(calc(-50% + " + px + "px), calc(-50% + " + py + "px)) scale(var(--inv, 1))";
+          }
         }
         return;
       }
@@ -1939,8 +1983,8 @@
         itemDrag = null;
         var dx = (event.clientX - drag.x) / (MAP_W * mapTransform.scale);
         var dy = (event.clientY - drag.y) / (MAP_H * mapTransform.scale);
-        var poly = mapWrapEl.querySelectorAll('[data-region="' + drag.id + '"]')[0];
-        if (poly) poly.removeAttribute("transform");
+        var pointEl = mapWrapEl.querySelectorAll('[data-region-point="' + drag.id + '"]')[0];
+        if (pointEl && pointEl.style) pointEl.style.transform = "";
         if (Math.abs(dx) + Math.abs(dy) > 0.002) {
           if (drag.kind === "region") {
             adminAction("admin_move_region", { rid: Number(drag.id), dx: dx, dy: dy });
@@ -1989,6 +2033,62 @@
       });
     });
 
+    Array.prototype.forEach.call(app.querySelectorAll("[data-region-point]"), function (point) {
+      point.addEventListener("pointerdown", function () {
+        if (adminMode) return;
+        regionLongPressed = false;
+        if (regionPressTimer) clearTimeout(regionPressTimer);
+        var id = point.getAttribute("data-region-point");
+        regionPressTimer = setTimeout(function () {
+          regionLongPressed = true;
+          regionHintId = id;
+          renderGame();
+          setTimeout(function () {
+            if (regionHintId === id) {
+              regionHintId = null;
+              if (view === "mapa") renderGame();
+            }
+          }, 1600);
+        }, 500);
+      });
+      ["pointerup", "pointercancel", "pointerleave"].forEach(function (type) {
+        point.addEventListener(type, function () {
+          if (regionPressTimer) clearTimeout(regionPressTimer);
+          regionPressTimer = null;
+        });
+      });
+      point.addEventListener("click", function () {
+        if (regionLongPressed) {
+          regionLongPressed = false;
+          return;
+        }
+        var id = point.getAttribute("data-region-point");
+        var region = regionById(id);
+        if (!region) return;
+        if (region.locked && !(session && session.isAdmin)) {
+          pvpResult = { ok: false, text: "Esa región está bloqueada por el administrador." };
+          renderGame();
+          return;
+        }
+        openRegionId = id;
+        mapFocusedRegion = null;
+        regionHintId = null;
+        pvpTarget = null;
+        pvpResult = null;
+        renderGame();
+      });
+    });
+
+    var backBtn = document.getElementById("map-back-btn");
+    if (backBtn) backBtn.addEventListener("click", function () {
+      openRegionId = null;
+      mapFocusedRegion = null;
+      regionHintId = null;
+      pvpTarget = null;
+      pvpResult = null;
+      renderGame();
+    });
+
     var attackBtn = document.getElementById("pvp-attack-btn");
     if (attackBtn) attackBtn.addEventListener("click", function () { if (pvpTarget) pvpAttack(pvpTarget.id); });
     var cancelBtn = document.getElementById("pvp-cancel-btn");
@@ -2004,7 +2104,14 @@
       });
     });
     Array.prototype.forEach.call(app.querySelectorAll("[data-map-center]"), function (button) {
-      button.addEventListener("click", function () { fitMap(); });
+      button.addEventListener("click", function () {
+        if (openRegionId) {
+          focusRegion(regionById(openRegionId));
+          mapFocusedRegion = openRegionId;
+        } else {
+          fitMap();
+        }
+      });
     });
 
     var adminBtn = document.getElementById("admin-mode-btn");

@@ -1311,10 +1311,18 @@ begin
   if pts is null then raise exception 'region not found'; end if;
 
   for pt in select value from jsonb_array_elements(pts) loop
+    nx := (pt->>0)::numeric;
+    ny := (pt->>1)::numeric;
+    minx := least(minx, nx); maxx := greatest(maxx, nx);
+    miny := least(miny, ny); maxy := greatest(maxy, ny);
+  end loop;
+
+  dx := least(0.995 - maxx, greatest(0.005 - minx, dx));
+  dy := least(0.995 - maxy, greatest(0.005 - miny, dy));
+
+  for pt in select value from jsonb_array_elements(pts) loop
     nx := (pt->>0)::numeric + dx;
     ny := (pt->>1)::numeric + dy;
-    nx := least(0.995, greatest(0.005, nx));
-    ny := least(0.995, greatest(0.005, ny));
     minx := least(minx, nx); maxx := greatest(maxx, nx);
     miny := least(miny, ny); maxy := greatest(maxy, ny);
     newpts := newpts || jsonb_build_array(jsonb_build_array(nx, ny));
@@ -1329,6 +1337,18 @@ begin
   update public.profiles
     set x = least(0.995, greatest(0.005, x + dx)),
         y = least(0.995, greatest(0.005, y + dy))
+    where region_id = rid;
+
+  update public.npcs
+    set x = least(0.995, greatest(0.005, x + dx)),
+        y = least(0.995, greatest(0.005, y + dy)),
+        updated_at = now()
+    where region_id = rid;
+
+  update public.castles
+    set x = least(0.995, greatest(0.005, x + dx)),
+        y = least(0.995, greatest(0.005, y + dy)),
+        updated_at = now()
     where region_id = rid;
 
   return jsonb_build_object('ok', true, 'points', newpts);
@@ -1353,6 +1373,8 @@ begin
     and py between (r.bbox->>'y0')::numeric and (r.bbox->>'y1')::numeric
   order by r.id
   limit 1;
+
+  if reg is null then raise exception 'outside region'; end if;
 
   update public.profiles
     set x = px,
@@ -1489,6 +1511,8 @@ begin
     and py between (r.bbox->>'y0')::numeric and (r.bbox->>'y1')::numeric
   order by r.id
   limit 1;
+
+  if reg is null then raise exception 'outside region'; end if;
 
   update public.npcs
     set x = px, y = py,

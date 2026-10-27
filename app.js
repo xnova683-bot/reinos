@@ -1852,7 +1852,9 @@
         if (!result.ok) {
           var adminError = String(cloudErrorMessage(result));
           if (adminError.indexOf("outside region") !== -1) {
-            adminError = "El castillo debe quedar dentro de su propia región.";
+            adminError = fn === "admin_move_castle"
+              ? "El castillo debe quedar dentro de su propia región."
+              : "La aldea o NPC debe quedar dentro de una región del mapa.";
           } else if (adminError.indexOf("castle not found") !== -1) {
             adminError = "Ese castillo ya no existe.";
           } else if (adminError.indexOf("village not found") !== -1) {

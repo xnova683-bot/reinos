@@ -217,7 +217,7 @@ declare
   slot integer;
   jitter integer;
   bx numeric;
-  by numeric;
+  oy numeric;
   bw numeric;
   bh numeric;
 begin
@@ -234,14 +234,14 @@ begin
       slot := n % 25;
 
       bx := (reg.bbox->>'x0')::numeric;
-      by := (reg.bbox->>'y0')::numeric;
+      oy := (reg.bbox->>'y0')::numeric;
       bw := (reg.bbox->>'x1')::numeric - bx;
-      bh := (reg.bbox->>'y1')::numeric - by;
+      bh := (reg.bbox->>'y1')::numeric - oy;
       jitter := ('x' || substr(md5(new.id::text), 1, 8))::bit(32)::bigint % 1000;
 
       new.region_id := reg.id;
       new.x := bx + bw * (0.25 + (slot % 5) * 0.125) + ((jitter % 5) - 2) * 0.005;
-      new.y := by + bh * (0.25 + (slot / 5) * 0.125) + (((jitter / 5) % 5) - 2) * 0.005;
+      new.y := oy + bh * (0.25 + (slot / 5) * 0.125) + (((jitter / 5) % 5) - 2) * 0.005;
     end if;
   end if;
 

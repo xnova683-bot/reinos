@@ -9,8 +9,8 @@
   var GATHER_COOLDOWN_MS = 30 * 1000;
   var SAVE_EVERY_MS = 8000;
 
-  var SUPABASE_URL = "https://upvqpyxscajqoszqsowa.supabase.co";
-  var SUPABASE_KEY = "sb_publishable_SVq_ig5V7naKJojtdy78IA_uLLMntrI";
+  var SUPABASE_URL = "https://dxsxdswyhdjzykuscqko.supabase.co";
+  var SUPABASE_KEY = "sb_publishable_rLhRC2iT7Qv59B7n31hZfg_EbI-q8pd";
 
   var RESOURCES = ["oro", "madera", "comida", "piedra"];
   var RES_LABEL = { oro: "Oro", madera: "Madera", comida: "Comida", piedra: "Piedra" };

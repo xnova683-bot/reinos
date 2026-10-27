@@ -1653,7 +1653,7 @@
 
     var mePos = session && session.village ? session.village : { x: 0.5, y: 0.5 };
     var myName = (session && session.username) || "Tu aldea";
-    var meMarker = !(session && session.village) ? "" :
+    var meMarker = !(session && session.village) || session.isAdmin ? "" :
       '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
         'title="Tu aldea" ' +
         'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
@@ -1686,6 +1686,7 @@
         .join("") + meMarker;
     } else {
       var players = world.players.filter(function (player) {
+        if (player.admin) return false;
         if (String(player.id) === String(session.userId)) return false;
         return String(player.region) === String(open.id) &&
           typeof player.x === "number" && typeof player.y === "number";

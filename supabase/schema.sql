@@ -327,10 +327,11 @@ begin
         'power', public.state_power(p.state),
         'shield', (p.shield_until is not null and p.shield_until > now()),
         'online', (p.last_seen is not null and p.last_seen > now() - interval '2 minutes'),
-        'wins', p.pvp_wins
+        'wins', p.pvp_wins,
+        'admin', coalesce(p.is_admin, false)
       ) order by p.pvp_wins desc, p.updated_at desc)
       from public.profiles p
-      where p.x is not null
+      where p.x is not null and coalesce(p.is_admin, false) = false
     ), '[]'::jsonb),
     'regions', coalesce((
       select jsonb_agg(jsonb_build_object(
@@ -340,7 +341,8 @@ begin
         'bbox', r.bbox,
         'locked', r.locked,
         'capacity', r.capacity,
-        'villages', (select count(*) from public.profiles p where p.region_id = r.id)
+        'villages', (select count(*) from public.profiles p
+          where p.region_id = r.id and coalesce(p.is_admin, false) = false)
       ) order by r.id)
       from public.regions r
     ), '[]'::jsonb),

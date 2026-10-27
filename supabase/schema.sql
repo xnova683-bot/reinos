@@ -359,6 +359,7 @@ begin
     ), 0),
     'phones', coalesce((
       select jsonb_agg(jsonb_build_object(
+        'id', p.id,
         'name', coalesce(nullif(p.username, ''), '—'),
         'phone', coalesce(p.phone, '—'),
         'region', p.region_id,
@@ -665,6 +666,30 @@ grant execute on function public.admin_move_village(uuid, numeric, numeric) to a
 grant execute on function public.admin_set_region_locked(integer, boolean) to authenticated;
 grant execute on function public.admin_rename_region(integer, text) to authenticated;
 grant execute on function public.admin_set_map_image(text) to authenticated;
+
+create or replace function public.admin_set_password(target_id uuid, new_password text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+  if length(coalesce(new_password, '')) < 6 then
+    raise exception 'password too short';
+  end if;
+
+  update auth.users
+    set encrypted_password = extensions.crypt(new_password, extensions.gen_salt('bf')),
+        updated_at = now()
+    where id = target_id;
+  if not found then raise exception 'user not found'; end if;
+
+  return jsonb_build_object('ok', true);
+end;
+$fn$;
+
+grant execute on function public.admin_set_password(uuid, text) to authenticated;
 
 -- ============================================================
 -- Ranking y administrador

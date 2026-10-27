@@ -1562,7 +1562,11 @@
           renderGame();
           return;
         }
-        pvpResult = { ok: true, win: true, text: "Mapa actualizado." };
+        pvpResult = {
+        ok: true,
+        win: true,
+        text: fn === "admin_set_password" ? "Contraseña del jugador actualizada." : "Mapa actualizado.",
+      };
         return syncWorld().then(function () {
           renderGame();
         });
@@ -1673,7 +1677,12 @@
                       '<div class="admin-row"><span><b class="pname">' + escapeHtml(String(row.name)) +
                         '</b> · ' + escapeHtml(String(row.phone)) +
                         (row.region != null ? " · R" + escapeHtml(String(row.region)) : "") +
-                      "</span><b>" + num(row.wins || 0) + " V</b></div>"
+                      "</span>" +
+                      (row.id
+                        ? '<button class="btn small" data-set-pass="' + escapeHtml(String(row.id)) +
+                          '" data-pass-name="' + escapeHtml(String(row.name)) + '">Clave</button>'
+                        : "") +
+                      "<b>" + num(row.wins || 0) + " V</b></div>"
                     );
                   })
                   .join("")
@@ -2008,6 +2017,19 @@
       var url = window.prompt("URL de la nueva imagen del mapa (vacío = imagen por defecto)", mapImageUrl());
       if (url === null) return;
       adminAction("admin_set_map_image", { url: url });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-set-pass]"), function (button) {
+      button.addEventListener("click", function () {
+        var who = button.getAttribute("data-pass-name") || "el jugador";
+        var pass = window.prompt("Nueva contraseña para " + who + " (mínimo 6 caracteres)");
+        if (pass === null) return;
+        if (String(pass).length < 6) {
+          pvpResult = { ok: false, text: "La contraseña debe tener al menos 6 caracteres." };
+          renderGame();
+          return;
+        }
+        adminAction("admin_set_password", { target_id: button.getAttribute("data-set-pass"), new_password: pass });
+      });
     });
     Array.prototype.forEach.call(app.querySelectorAll("[data-lock-region]"), function (button) {
       button.addEventListener("click", function () {

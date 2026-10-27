@@ -2615,7 +2615,7 @@
         '<div class="admin-panel">' +
           '<div class="admin-head"><b>Administración del mapa</b>' +
             '<button class="btn' + (adminMode ? " active" : "") + '" id="admin-mode-btn">' +
-              (adminMode ? "Salir del modo mapa" : "Mover regiones/aldeas") +
+              (adminMode ? "Salir del modo mapa" : "Editar mapa") +
             "</button>" +
             '<button class="btn" id="admin-image-btn">Cambiar imagen</button>' +
             '<button class="btn" id="admin-settings-btn">Administrar WoW</button>' +

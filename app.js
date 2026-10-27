@@ -2510,7 +2510,7 @@
 
     var mePos = session && session.village ? session.village : { x: 0.5, y: 0.5 };
     var myName = (session && session.username) || "Tu aldea";
-    var meMarker = !(session && session.village) ? "" :
+    var meMarker = !(session && session.village) || (session && session.isAdmin) ? "" :
       '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
         'title="Tu aldea" ' +
         'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
@@ -2824,7 +2824,7 @@
     world.castles.forEach(function (castle) {
       if (String(castle.region) === String(region.id)) grow(castle);
     });
-    if (session && session.village &&
+    if (session && !session.isAdmin && session.village &&
         (String(session.region) === String(region.id) || pointInRegion(region, session.village))) {
       grow(session.village);
     }

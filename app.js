@@ -1527,6 +1527,17 @@
     return found;
   }
 
+  function pointInRegion(region, pos) {
+    if (!region || !pos || !region.bbox) return false;
+    var b = region.bbox;
+    var x = Number(pos.x);
+    var y = Number(pos.y);
+    return (
+      x >= Number(b.x0) && x <= Number(b.x1) &&
+      y >= Number(b.y0) && y <= Number(b.y1)
+    );
+  }
+
   function regionAt(x, y) {
     var found = null;
     world.regions.forEach(function (region) {
@@ -1642,8 +1653,9 @@
 
     var mePos = session && session.village ? session.village : { x: 0.5, y: 0.5 };
     var myName = (session && session.username) || "Tu aldea";
-    var meMarker =
+    var meMarker = !(session && session.village) ? "" :
       '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
+        'title="Tu aldea" ' +
         'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
         '<span class="mlabel">' + escapeHtml(myName) + '</span><span class="pin"></span>' +
       "</div>";
@@ -1671,7 +1683,7 @@
             "</button>"
           );
         })
-        .join("");
+        .join("") + meMarker;
     } else {
       var players = world.players.filter(function (player) {
         if (String(player.id) === String(session.userId)) return false;
@@ -1681,9 +1693,10 @@
       var points = players.map(function (player) {
         return { x: Number(player.x), y: Number(player.y) };
       });
-      if (String(session.region) === String(open.id)) {
-        points.push({ x: Number(mePos.x), y: Number(mePos.y) });
-      }
+      var mineHere =
+        !!meMarker &&
+        (String(session.region) === String(open.id) || pointInRegion(open, mePos));
+      if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y) });
 
       layer = roadsSvg(points) + players
         .map(function (player) {
@@ -1698,8 +1711,7 @@
             "</button>"
           );
         })
-        .join("") +
-        (String(session.region) === String(open.id) ? meMarker : "");
+        .join("") + (mineHere ? meMarker : "");
     }
 
     var adminPanel = "";
@@ -1832,9 +1844,35 @@
     if (!mapWrapEl || !region) return;
     var w = mapWrapEl.clientWidth || 900;
     var h = mapWrapEl.clientHeight || 480;
-    var bb = region.bbox || { x0: 0, y0: 0, x1: 1, y1: 1 };
-    var bw = Math.max(0.02, Number(bb.x1) - Number(bb.x0));
-    var bh = Math.max(0.02, Number(bb.y1) - Number(bb.y0));
+    var raw = region.bbox || { x0: 0, y0: 0, x1: 1, y1: 1 };
+    var bb = {
+      x0: Number(raw.x0), y0: Number(raw.y0),
+      x1: Number(raw.x1), y1: Number(raw.y1)
+    };
+    var grow = function (pos) {
+      var x = Number(pos.x);
+      var y = Number(pos.y);
+      if (!isFinite(x) || !isFinite(y)) return;
+      bb.x0 = Math.min(bb.x0, x);
+      bb.y0 = Math.min(bb.y0, y);
+      bb.x1 = Math.max(bb.x1, x);
+      bb.y1 = Math.max(bb.y1, y);
+    };
+    world.players.forEach(function (player) {
+      if (String(player.region) === String(region.id)) grow(player);
+    });
+    if (session && session.village &&
+        (String(session.region) === String(region.id) || pointInRegion(region, session.village))) {
+      grow(session.village);
+    }
+    var padX = (bb.x1 - bb.x0) * 0.12 + 0.012;
+    var padY = (bb.y1 - bb.y0) * 0.12 + 0.012;
+    bb.x0 = Math.max(0, bb.x0 - padX);
+    bb.y0 = Math.max(0, bb.y0 - padY);
+    bb.x1 = Math.min(1, bb.x1 + padX);
+    bb.y1 = Math.min(1, bb.y1 + padY);
+    var bw = Math.max(0.02, bb.x1 - bb.x0);
+    var bh = Math.max(0.02, bb.y1 - bb.y0);
     mapFitScale = Math.max(w / MAP_W, h / MAP_H);
     var scale = Math.min(w / (bw * MAP_W * 1.35), h / (bh * MAP_H * 1.5));
     mapTransform.scale = Math.max(mapFitScale * 1.4, scale);
@@ -2123,6 +2161,17 @@
         regionHintId = null;
         pvpTarget = null;
         pvpResult = null;
+        renderGame();
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-map-village]"), function (mine) {
+      mine.addEventListener("click", function () {
+        if (adminMode || openRegionId) return;
+        var region = session && (session.region || (regionAt(session.village.x, session.village.y) || {}).id);
+        if (!region) return;
+        openRegionId = region;
+        mapFocusedRegion = null;
         renderGame();
       });
     });

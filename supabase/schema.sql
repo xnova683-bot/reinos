@@ -240,8 +240,8 @@ begin
       jitter := ('x' || substr(md5(new.id::text), 1, 8))::bit(32)::bigint % 1000;
 
       new.region_id := reg.id;
-      new.x := bx + bw * (0.25 + (slot % 5) * 0.125) + ((jitter % 5) - 2) * 0.005;
-      new.y := oy + bh * (0.25 + (slot / 5) * 0.125) + (((jitter / 5) % 5) - 2) * 0.005;
+      new.x := bx + bw * (0.25 + (slot % 5) * 0.125) + ((jitter % 5) - 2) * bw * 0.01;
+      new.y := oy + bh * (0.25 + ((slot / 5) % 5) * 0.125) + (((jitter / 5) % 5) - 2) * bh * 0.01;
     end if;
   end if;
 

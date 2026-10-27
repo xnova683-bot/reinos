@@ -1883,6 +1883,7 @@
                   : "Mapa actualizado.",
       };
         return syncWorld().then(function () {
+          mapFocusedRegion = null;
           renderGame();
         });
       });
@@ -2181,7 +2182,7 @@
               })
               .join("") +
           "</div>" +
-          (adminMode ? '<div class="admin-hint">Arrastra un punto de región en el mundo o una aldea dentro de su región.</div>' : "") +
+          (adminMode ? '<div class="admin-hint">En el mundo arrastra puntos de región; dentro de una región arrastra sus aldeas, NPCs y castillo por todo el mapa.</div>' : "") +
         "</div>";
     }
 

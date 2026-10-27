@@ -1411,27 +1411,19 @@ as $fn$
 declare
   px numeric := least(0.995, greatest(0.005, nx));
   py numeric := least(0.995, greatest(0.005, ny));
-  reg integer;
-  current_region integer;
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
-  select p.region_id into current_region from public.profiles p where p.id = target_id;
-  if not found then raise exception 'village not found'; end if;
-  reg := public.region_at(px, py);
-
-  if reg is null or reg is distinct from current_region then
-    raise exception 'outside region';
-  end if;
 
   update public.profiles
     set x = px,
-        y = py,
-        region_id = coalesce(reg, region_id)
+        y = py
     where id = target_id;
   if not found then raise exception 'village not found'; end if;
   return jsonb_build_object('ok', true);
 end;
 $fn$;
+
+grant execute on function public.admin_move_village(uuid, numeric, numeric) to authenticated;
 
 create or replace function public.admin_set_region_locked(rid integer, is_locked boolean)
 returns jsonb
@@ -1517,22 +1509,15 @@ as $fn$
 declare
   px numeric := least(0.995, greatest(0.005, nx));
   py numeric := least(0.995, greatest(0.005, ny));
-  c public.castles%rowtype;
-  inside boolean := false;
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
 
-  select * into c from public.castles where id = target_id;
+  update public.castles
+    set x = px,
+        y = py,
+        updated_at = now()
+  where id = target_id;
   if not found then raise exception 'castle not found'; end if;
-
-  select px between (r.bbox->>'x0')::numeric and (r.bbox->>'x1')::numeric
-      and py between (r.bbox->>'y0')::numeric and (r.bbox->>'y1')::numeric
-    into inside
-  from public.regions r where r.id = c.region_id;
-
-  if not coalesce(inside, false) then raise exception 'outside region'; end if;
-
-  update public.castles set x = px, y = py, updated_at = now() where id = target_id;
   return jsonb_build_object('ok', true);
 end;
 $fn$;
@@ -1548,22 +1533,12 @@ as $fn$
 declare
   px numeric := least(0.995, greatest(0.005, nx));
   py numeric := least(0.995, greatest(0.005, ny));
-  reg integer;
-  current_region integer;
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
-  select n.region_id into current_region from public.npcs n where n.id = target_id;
-  if not found then raise exception 'npc not found'; end if;
-
-  reg := public.region_at(px, py);
-
-  if reg is null or reg is distinct from current_region then
-    raise exception 'outside region';
-  end if;
 
   update public.npcs
-    set x = px, y = py,
-        region_id = coalesce(reg, region_id),
+    set x = px,
+        y = py,
         updated_at = now()
   where id = target_id;
   if not found then raise exception 'npc not found'; end if;

@@ -1351,7 +1351,7 @@ begin
         updated_at = now()
     where region_id = rid;
 
-  return jsonb_build_object('ok', true, 'points', newpts);
+  return jsonb_build_object('ok', true, 'points', newpts, 'dx', dx, 'dy', dy);
 end;
 $fn$;
 

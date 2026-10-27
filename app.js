@@ -1884,6 +1884,22 @@
       };
         return syncWorld().then(function () {
           mapFocusedRegion = null;
+          if (session && session.village && fn === "admin_move_village" &&
+              body && String(body.target_id) === String(session.userId)) {
+            session.village = {
+              x: clamp(Number(body.nx), 0.005, 0.995),
+              y: clamp(Number(body.ny), 0.005, 0.995),
+            };
+            writeJSON(SESSION_KEY, session);
+          } else if (session && session.village && fn === "admin_move_region" &&
+                     body && String(body.rid) === String(session.region) &&
+                     result && result.data && result.data.dx != null) {
+            session.village = {
+              x: clamp(Number(session.village.x) + Number(result.data.dx), 0.005, 0.995),
+              y: clamp(Number(session.village.y) + Number(result.data.dy), 0.005, 0.995),
+            };
+            writeJSON(SESSION_KEY, session);
+          }
           renderGame();
         });
       });
@@ -2526,6 +2542,7 @@
         var marker = target && target.closest ? target.closest("[data-map-player]") : null;
         var npc = target && target.closest ? target.closest("[data-map-npc]") : null;
         var castleNode = target && target.closest ? target.closest("[data-map-castle]") : null;
+        var ownVillage = target && target.closest ? target.closest("[data-map-village]") : null;
         if (point) {
           beginItemDrag("region", point.getAttribute("data-region-point"), point, event);
           return;
@@ -2540,6 +2557,10 @@
         }
         if (castleNode) {
           beginItemDrag("castle", castleNode.getAttribute("data-map-castle"), castleNode, event);
+          return;
+        }
+        if (ownVillage && session.userId) {
+          beginItemDrag("village", session.userId, ownVillage, event);
           return;
         }
       }

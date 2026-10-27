@@ -845,3 +845,39 @@ input {
   color: #e9dcae;
   font-variant-numeric: tabular-nums;
 }
+
+.auth-modes {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.9rem 2rem 0;
+}
+
+.mode-tab {
+  flex: 1;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-sub);
+  font: inherit;
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.45rem 0.6rem;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-tab:hover {
+  color: var(--gold);
+  border-color: var(--gold-dim);
+}
+
+.mode-tab.active {
+  background: rgba(216, 189, 82, 0.14);
+  border-color: var(--gold-dim);
+  color: var(--gold);
+}
+
+.auth-form .msg {
+  margin: 0;
+}

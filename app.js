@@ -9,6 +9,9 @@
   var GATHER_COOLDOWN_MS = 30 * 1000;
   var SAVE_EVERY_MS = 8000;
 
+  var SUPABASE_URL = "https://upvqpyxscajqoszqsowa.supabase.co";
+  var SUPABASE_KEY = "sb_publishable_SVq_ig5V7naKJojtdy78IA_uLLMntrI";
+
   var RESOURCES = ["oro", "madera", "comida", "piedra"];
   var RES_LABEL = { oro: "Oro", madera: "Madera", comida: "Comida", piedra: "Piedra" };
   var RES_ICON = { oro: "◈", madera: "❖", comida: "❁", piedra: "▲" };
@@ -370,8 +373,16 @@
 
   /* ---------------- persistence of game ---------------- */
 
+  var cloudSaveHandle = null;
+  var cloudStorage = readJSON(SETTINGS_KEY, {});
+  var cloudState = cloudStorage.cloud || "unknown"; // unknown | ready | missing | offline
+
   function saveGame() {
     if (!session || !account || !state) return;
+    if (session.mode === "cloud") {
+      scheduleCloudSave();
+      return;
+    }
     var accounts = getAccounts();
     if (!accounts[account]) return;
     accounts[account].state = state;
@@ -380,10 +391,243 @@
     dirty = false;
   }
 
+  function mirrorLocal(email, pass, race, gameState) {
+    var accounts = getAccounts();
+    accounts[email] = {
+      email: email,
+      pass: pass || (accounts[email] && accounts[email].pass) || "",
+      race: race,
+      createdAt: (accounts[email] && accounts[email].createdAt) || now(),
+      state: gameState,
+    };
+    saveAccounts(accounts);
+  }
+
+  /* ---------------- supabase cloud ---------------- */
+
+  function api(path, options) {
+    var opts = options || {};
+    var headers = {
+      apikey: SUPABASE_KEY,
+      "Content-Type": "application/json",
+    };
+    if (opts.token) headers.Authorization = "Bearer " + opts.token;
+    else headers.Authorization = "Bearer " + SUPABASE_KEY;
+    Object.assign(headers, opts.headers || {});
+    return fetch(SUPABASE_URL + path, {
+      method: opts.method || "GET",
+      headers: headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    }).then(function (response) {
+      return response.text().then(function (text) {
+        var data = null;
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (err) {
+            data = text;
+          }
+        }
+        return { ok: response.ok, status: response.status, data: data };
+      });
+    });
+  }
+
+  function cloudErrorMessage(result) {
+    var data = result.data;
+    if (!data) return "Error de conexión (" + result.status + ").";
+    if (typeof data === "string") return data;
+    return (
+      data.msg ||
+      data.message ||
+      data.error_description ||
+      data.error ||
+      data.hint ||
+      "Error de conexión (" + result.status + ")."
+    );
+  }
+
+  function setCloudState(next) {
+    cloudState = next;
+    var settings = readJSON(SETTINGS_KEY, {});
+    settings.cloud = next;
+    writeJSON(SETTINGS_KEY, settings);
+  }
+
+  function checkCloud() {
+    return api("/rest/v1/profiles?select=id&limit=1").then(function (result) {
+      if (result.ok) {
+        setCloudState("ready");
+      } else if (result.status === 404) {
+        setCloudState("missing");
+      } else {
+        setCloudState("offline");
+      }
+      return cloudState;
+    }).catch(function () {
+      setCloudState("offline");
+      return cloudState;
+    });
+  }
+
+  function cloudSignUp(email, password) {
+    return api("/auth/v1/signup", { method: "POST", body: { email: email, password: password } });
+  }
+
+  function cloudSignIn(email, password) {
+    return api("/auth/v1/token?grant_type=password", {
+      method: "POST",
+      body: { email: email, password: password },
+    });
+  }
+
+  function cloudRefresh(refreshToken) {
+    return api("/auth/v1/token?grant_type=refresh_token", {
+      method: "POST",
+      body: { refresh_token: refreshToken },
+    });
+  }
+
+  function cloudUser(accessToken) {
+    return api("/auth/v1/user", { token: accessToken });
+  }
+
+  function cloudLoadProfile(token, userId) {
+    return api(
+      "/rest/v1/profiles?id=eq." + encodeURIComponent(userId) + "&select=race,state,username",
+      { token: token }
+    );
+  }
+
+  function cloudWriteProfile(token, userId, username, race, gameState) {
+    return api("/rest/v1/profiles", {
+      method: "POST",
+      token: token,
+      headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+      body: [
+        {
+          id: userId,
+          username: username,
+          race: race,
+          state: gameState,
+          updated_at: new Date().toISOString(),
+        },
+      ],
+    });
+  }
+
+  function scheduleCloudSave() {
+    if (cloudSaveHandle) return;
+    cloudSaveHandle = setTimeout(function () {
+      cloudSaveHandle = null;
+      flushCloudSave();
+    }, 1500);
+  }
+
+  function flushCloudSave() {
+    if (!session || session.mode !== "cloud" || !state || !session.token) return;
+    var token = session.token;
+    var userId = session.userId;
+    var username = session.username || account;
+    cloudWriteProfile(token, userId, username, state.race, state).then(function (result) {
+      if (result.ok) {
+        setCloudState("ready");
+        dirty = false;
+        return;
+      }
+      if (result.status === 401) {
+        return cloudRefresh(session.refreshToken).then(function (refresh) {
+          if (!refresh.ok || !refresh.data || !refresh.data.access_token) return;
+          session.token = refresh.data.access_token;
+          session.refreshToken = refresh.data.refresh_token || session.refreshToken;
+          writeJSON(SESSION_KEY, session);
+          return flushCloudSave();
+        });
+      }
+      if (result.status === 404) setCloudState("missing");
+    }).catch(function () {
+      setCloudState("offline");
+    });
+  }
+
+  function startCloudSession(auth, email, password) {
+    session = {
+      mode: "cloud",
+      email: email,
+      token: auth.access_token,
+      refreshToken: auth.refresh_token,
+      userId: auth.user.id,
+      username: (auth.user.user_metadata && auth.user.user_metadata.username) || email.split("@")[0],
+      expiresAt: now() + (auth.expires_in || 3600) * 1000,
+    };
+    account = email;
+    writeJSON(SESSION_KEY, session);
+
+    return cloudLoadProfile(session.token, session.userId).then(function (result) {
+      if (result.status === 404) {
+        setCloudState("missing");
+        session = null;
+        account = null;
+        localStorage.removeItem(SESSION_KEY);
+        authError =
+          "Las tablas de Supabase aún no existen. Ejecuta supabase/schema.sql en el SQL Editor del dashboard y vuelve a intentar.";
+        renderAuth();
+        return;
+      }
+      if (result.ok) setCloudState("ready");
+      var row = Array.isArray(result.data) ? result.data[0] : null;
+      if (!row) {
+        pendingRace = { mode: "cloud", email: email, pass: password || "", token: session.token };
+        renderRaceSelection();
+        return;
+      }
+      state = migrateState(row.state && row.state.race ? row.state : newState(row.race));
+      state.race = row.race || state.race;
+      session.username = row.username || session.username;
+      var offline = applyOffline(state);
+      if (offline.minutes >= 1) {
+        addLog(
+          "Mientras estabas fuera (" + Math.round(offline.minutes) + " min) tu aldea produjo recursos.",
+          ""
+        );
+      }
+      mirrorLocal(email, password, state.race, state);
+      enterGame();
+    });
+  }
+
   /* ---------------- auth screens ---------------- */
+
+  var authCloud = (readJSON(SETTINGS_KEY, {}).cloudMode !== false);
+
+  function translateCloudError(result) {
+    var message = cloudErrorMessage(result);
+    var lower = String(message).toLowerCase();
+    if (lower.indexOf("invalid login credentials") !== -1) return "Correo o contraseña incorrectos.";
+    if (lower.indexOf("email not confirmed") !== -1)
+      return "Debes confirmar tu correo antes de entrar. Revisa tu bandeja de entrada (o desactiva la confirmación por correo en Supabase).";
+    if (lower.indexOf("user already registered") !== -1)
+      return "Ya existe una cuenta con ese correo. Inicia sesión.";
+    if (lower.indexOf("password should be") !== -1) return "La contraseña es demasiado débil (mínimo 6 caracteres).";
+    if (lower.indexOf("rate limit") !== -1 || lower.indexOf("too many") !== -1)
+      return "Demasiados intentos. Espera un minuto y vuelve a probar.";
+    return message;
+  }
 
   function renderAuth() {
     var isLogin = authMode === "login";
+    var networkNote = "";
+    if (authCloud) {
+      if (cloudState === "missing") {
+        networkNote =
+          '<div class="msg error">Falta el esquema en Supabase. Abre el SQL Editor del dashboard, ejecuta el archivo ' +
+          "<b>supabase/schema.sql</b> y recarga esta página.</div>";
+      } else if (cloudState === "offline") {
+        networkNote = '<div class="msg error">No se pudo conectar con Supabase. Revisa tu conexión o usa el modo local.</div>';
+      } else {
+        networkNote = '<div class="msg ok">Conectado a Supabase. Tus partidas se guardan en la nube.</div>';
+      }
+    }
     app.innerHTML =
       '<div class="auth-screen">' +
         '<div class="auth-card">' +
@@ -391,7 +635,12 @@
             "<h1>WoW Imperial</h1>" +
             "<p>Forja tu imperio. Elige tu raza y domina.</p>" +
           "</div>" +
+          '<div class="auth-modes">' +
+            '<button type="button" class="mode-tab' + (authCloud ? " active" : "") + '" data-mode="cloud">Nube</button>' +
+            '<button type="button" class="mode-tab' + (!authCloud ? " active" : "") + '" data-mode="local">Local</button>' +
+          "</div>" +
           '<form class="auth-form" id="auth-form" novalidate>' +
+            networkNote +
             (authError ? '<div class="msg error">' + escapeHtml(authError) + "</div>" : "") +
             (authInfo ? '<div class="msg ok">' + escapeHtml(authInfo) + "</div>" : "") +
             '<label class="field">Correo electrónico' +
@@ -402,8 +651,8 @@
                 (isLogin ? "current-password" : "new-password") +
               '" placeholder="Mínimo 6 caracteres" minlength="6" required />' +
             "</label>" +
-            '<button class="btn-primary" type="submit">' +
-              (isLogin ? "Entrar" : "Crear cuenta y elegir raza") +
+            '<button class="btn-primary" type="submit"' + (authBusy ? " disabled" : "") + ">" +
+              (authBusy ? "Conectando…" : isLogin ? "Entrar" : "Crear cuenta y elegir raza") +
             "</button>" +
             '<div class="auth-foot">' +
               "<span>" + (isLogin ? "¿Sin cuenta?" : "¿Ya tienes cuenta?") + "</span>" +
@@ -414,6 +663,18 @@
           "</form>" +
         "</div>" +
       "</div>";
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-mode]"), function (button) {
+      button.addEventListener("click", function () {
+        authCloud = button.getAttribute("data-mode") === "cloud";
+        var settings = readJSON(SETTINGS_KEY, {});
+        settings.cloudMode = authCloud;
+        writeJSON(SETTINGS_KEY, settings);
+        authError = "";
+        authInfo = "";
+        renderAuth();
+      });
+    });
 
     document.getElementById("toggle-mode").addEventListener("click", function () {
       authMode = isLogin ? "register" : "login";
@@ -441,6 +702,11 @@
         return;
       }
 
+      if (authCloud) {
+        cloudAuthFlow(email, password, isLogin);
+        return;
+      }
+
       var accounts = getAccounts();
       if (isLogin) {
         var existing = accounts[email];
@@ -463,8 +729,79 @@
         renderAuth();
         return;
       }
-      pendingRace = { email: email, pass: hashPassword(password) };
+      pendingRace = { mode: "local", email: email, pass: hashPassword(password) };
       renderRaceSelection();
+    });
+  }
+
+  var authBusy = false;
+
+  function cloudAuthFlow(email, password, isLogin) {
+    authBusy = true;
+    renderAuth();
+
+    function done() {
+      authBusy = false;
+    }
+
+    function fail(result) {
+      done();
+      authError = translateCloudError(result);
+      renderAuth();
+    }
+
+    function afterSignUp(result) {
+      if (!result.ok) return fail(result);
+      var data = result.data || {};
+      if (data.access_token) {
+        done();
+        startCloudSession(data, email, password).catch(function () {
+          authBusy = false;
+          authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
+          renderAuth();
+        });
+        return;
+      }
+      // Confirmación de correo activada: intentamos entrar directamente por si está desactivada.
+      cloudSignIn(email, password).then(function (signIn) {
+        if (signIn.ok && signIn.data && signIn.data.access_token) {
+          done();
+          startCloudSession(signIn.data, email, password).catch(function () {
+            authBusy = false;
+            authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
+            renderAuth();
+          });
+          return;
+        }
+        done();
+        authMode = "login";
+        authInfo =
+          "Cuenta creada. Si Supabase pide confirmación por correo, revisa tu email y luego inicia sesión.";
+        renderAuth();
+      });
+    }
+
+    if (isLogin) {
+      cloudSignIn(email, password).then(function (result) {
+        if (!result.ok) return fail(result);
+        done();
+        startCloudSession(result.data, email, password).catch(function () {
+          authBusy = false;
+          authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
+          renderAuth();
+        });
+      }).catch(function () {
+        done();
+        authError = "No se pudo conectar con Supabase.";
+        renderAuth();
+      });
+      return;
+    }
+
+    cloudSignUp(email, password).then(afterSignUp).catch(function () {
+      done();
+      authError = "No se pudo conectar con Supabase.";
+      renderAuth();
     });
   }
 
@@ -491,7 +828,12 @@
   }
 
   function logout() {
+    var closing = session;
     saveGame();
+    if (closing && closing.mode === "cloud" && closing.token) {
+      flushCloudSave();
+      api("/auth/v1/logout", { method: "POST", token: closing.token }).catch(function () {});
+    }
     session = null;
     account = null;
     state = null;
@@ -552,6 +894,7 @@
           "<p>Esta decisión es permanente. Cada raza cambia por completo tu forma de jugar: " +
             "no hay una mejor que otra, solo estilos distintos.</p>" +
         "</div>" +
+        (authError ? '<div class="msg error">' + escapeHtml(authError) + "</div>" : "") +
         '<div class="notice">' +
           "<b>Información importante:</b> la <b>Horda</b> tiene tropas más fuertes pero produce recursos más lento. " +
           "La <b>Alianza</b> es el punto medio. Los <b>Enanos</b> tienen tropas más débiles pero recolectan muchos más recursos." +
@@ -562,6 +905,33 @@
     Array.prototype.forEach.call(app.querySelectorAll("[data-pick-race]"), function (button) {
       button.addEventListener("click", function () {
         var raceId = button.getAttribute("data-pick-race");
+        if (pendingRace && pendingRace.mode === "cloud") {
+          var cloudPending = pendingRace;
+          pendingRace = null;
+          var freshState = newState(raceId);
+          cloudWriteProfile(cloudPending.token, session.userId, session.username, raceId, freshState)
+            .then(function (result) {
+              if (!result.ok) {
+                pendingRace = cloudPending;
+                authError =
+                  result.status === 404
+                    ? "Faltan las tablas en Supabase. Ejecuta supabase/schema.sql en el SQL Editor."
+                    : "No se pudo guardar tu raza: " + cloudErrorMessage(result);
+                renderRaceSelection();
+                return;
+              }
+              state = freshState;
+              mirrorLocal(cloudPending.email, "", raceId, state);
+              session.username = session.username || cloudPending.email.split("@")[0];
+              enterGame();
+            })
+            .catch(function () {
+              pendingRace = cloudPending;
+              authError = "No se pudo conectar con Supabase. Inténtalo de nuevo.";
+              renderRaceSelection();
+            });
+          return;
+        }
         if (pendingRace) {
           var email = pendingRace.email;
           var accounts = getAccounts();
@@ -1281,6 +1651,15 @@
 
   function boot() {
     var savedSession = readJSON(SESSION_KEY, null);
+    if (savedSession && savedSession.mode === "cloud" && savedSession.token) {
+      resumeCloudSession(savedSession).then(function (resumed) {
+        if (!resumed) {
+          localStorage.removeItem(SESSION_KEY);
+          renderAuth();
+        }
+      });
+      return;
+    }
     if (savedSession && savedSession.email) {
       var accounts = getAccounts();
       if (accounts[savedSession.email]) {
@@ -1289,6 +1668,74 @@
       }
     }
     renderAuth();
+    checkCloud().then(function () {
+      if (!session) renderAuth();
+    });
+  }
+
+  function resumeCloudSession(saved) {
+    function loadWithToken(token) {
+      return cloudUser(token).then(function (user) {
+        if (user.status === 401) return null;
+        if (!user.ok) throw new Error("cloud");
+        session = {
+          mode: "cloud",
+          email: saved.email,
+          token: token,
+          refreshToken: saved.refreshToken,
+          userId: (user.data && user.data.id) || saved.userId,
+          username: saved.username || saved.email.split("@")[0],
+          expiresAt: saved.expiresAt,
+        };
+        account = saved.email;
+        writeJSON(SESSION_KEY, session);
+        return cloudLoadProfile(session.token, session.userId).then(function (profile) {
+          if (profile.status === 404) {
+            setCloudState("missing");
+            authError =
+              "Faltan las tablas en Supabase. Ejecuta supabase/schema.sql en el SQL Editor del dashboard.";
+            pendingRace = null;
+            session = null;
+            account = null;
+            return false;
+          }
+          var row = Array.isArray(profile.data) ? profile.data[0] : null;
+          if (!row) {
+            pendingRace = { mode: "cloud", email: saved.email, pass: "", token: session.token };
+            renderRaceSelection();
+            return true;
+          }
+          state = migrateState(row.state && row.state.race ? row.state : newState(row.race));
+          state.race = row.race || state.race;
+          session.username = row.username || session.username;
+          var offline = applyOffline(state);
+          if (offline.minutes >= 1) {
+            addLog(
+              "Mientras estabas fuera (" + Math.round(offline.minutes) + " min) tu aldea produjo recursos.",
+              ""
+            );
+          }
+          mirrorLocal(saved.email, "", state.race, state);
+          enterGame();
+          return true;
+        });
+      });
+    }
+
+    return loadWithToken(saved.token).then(function (result) {
+      if (result !== null) return result;
+      if (!saved.refreshToken) return false;
+      return cloudRefresh(saved.refreshToken).then(function (refresh) {
+        if (!refresh.ok || !refresh.data || !refresh.data.access_token) return false;
+        saved.token = refresh.data.access_token;
+        saved.refreshToken = refresh.data.refresh_token || saved.refreshToken;
+        return loadWithToken(saved.token).then(function (next) {
+          return next === null ? false : next;
+        });
+      });
+    }).catch(function () {
+      return false;
+    });
   }
 
   document.addEventListener("visibilitychange", function () {

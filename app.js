@@ -1669,6 +1669,80 @@
       });
   }
 
+  function adminSpeedHtml() {
+    return (
+      '<div class="admin-maint"><b>Velocidad de recursos</b>' +
+        '<div class="admin-maint-state">Actual: x' + resourceSpeed().toFixed(2) + '</div>' +
+        '<div class="admin-speed-row">' +
+          '<input id="speed-input" type="number" min="0.1" max="10" step="0.1" value="' +
+            resourceSpeed().toFixed(1) + '" />' +
+          '<button class="btn" id="speed-save">Guardar velocidad</button>' +
+        '</div>' +
+        '<div class="admin-maint-error" id="speed-error"></div>' +
+      "</div>"
+    );
+  }
+
+  function adminMaintHtml() {
+    return (
+      '<div class="admin-maint"><b>Portal de mantenimiento</b>' +
+        '<div class="admin-maint-state">' +
+          (world.maintenance && world.maintenance.active ? "Activo ahora" : "Inactivo") +
+        "</div>" +
+        '<textarea id="maint-message-input" rows="2" placeholder="Mensaje para los jugadores">' +
+          escapeHtml((world.maintenance && world.maintenance.message) || "") +
+        "</textarea>" +
+        '<input id="maint-password-input" type="password" autocomplete="new-password" ' +
+          'placeholder="Contraseña de acceso (vacío = sin contraseña)" />' +
+        '<button class="btn" id="maint-toggle">' +
+          (world.maintenance && world.maintenance.active ? "Desactivar mantenimiento" : "Activar mantenimiento") +
+        "</button>" +
+        '<div class="admin-maint-error" id="maint-error"></div>' +
+      "</div>"
+    );
+  }
+
+  function adminPlayersHtml() {
+    return (
+      '<div class="admin-phones"><b>Jugadores registrados (' + world.phones.length + ")</b>" +
+        (world.phones.length
+          ? world.phones
+              .map(function (row) {
+                return (
+                  '<div class="admin-row"><span><b class="pname">' + escapeHtml(String(row.name)) +
+                    '</b> · ' + escapeHtml(String(row.phone)) +
+                    (row.region != null ? " · R" + escapeHtml(String(row.region)) : "") +
+                  "</span>" +
+                  (row.id
+                    ? '<button class="btn small" data-set-pass="' + escapeHtml(String(row.id)) +
+                      '" data-pass-name="' + escapeHtml(String(row.name)) + '">Clave</button>'
+                    : "") +
+                  "<b>" + num(row.wins || 0) + " V</b></div>"
+                );
+              })
+              .join("")
+          : '<div class="admin-hint">Aún no hay jugadores registrados.</div>') +
+        '<div class="admin-hint">Las contraseñas no se pueden mostrar: Supabase las guarda cifradas. ' +
+          "Si un jugador la olvida, restablécala desde aquí o desde el panel de Supabase (Authentication → Users).</div>" +
+      "</div>"
+    );
+  }
+
+  function adminView() {
+    return (
+      '<div class="panel admin-page">' +
+        '<div class="panel-head"><h2>Administrar WoW</h2>' +
+          '<span class="hint">Opciones generales del reino</span>' +
+        "</div>" +
+        '<div class="panel-body">' +
+          adminSpeedHtml() +
+          adminMaintHtml() +
+          adminPlayersHtml() +
+        "</div>" +
+      "</div>"
+    );
+  }
+
   function mapView() {
     var power = armyPower(state);
     var open = openRegionId ? regionById(openRegionId) : null;
@@ -1755,11 +1829,12 @@
     if (session && session.isAdmin) {
       adminPanel =
         '<div class="admin-panel">' +
-          '<div class="admin-head"><b>Administración</b>' +
+          '<div class="admin-head"><b>Administración del mapa</b>' +
             '<button class="btn' + (adminMode ? " active" : "") + '" id="admin-mode-btn">' +
               (adminMode ? "Salir del modo mapa" : "Mover regiones/aldeas") +
             "</button>" +
             '<button class="btn" id="admin-image-btn">Cambiar imagen</button>' +
+            '<button class="btn" id="admin-settings-btn">Administrar WoW</button>' +
           "</div>" +
           '<div class="admin-regions">' +
             world.regions
@@ -1776,50 +1851,6 @@
               .join("") +
           "</div>" +
           (adminMode ? '<div class="admin-hint">Arrastra un punto de región en el mundo o una aldea dentro de su región.</div>' : "") +
-          '<div class="admin-maint"><b>Velocidad de recursos</b>' +
-            '<div class="admin-maint-state">Actual: x' + resourceSpeed().toFixed(2) + '</div>' +
-            '<div class="admin-speed-row">' +
-              '<input id="speed-input" type="number" min="0.1" max="10" step="0.1" value="' +
-                resourceSpeed().toFixed(1) + '" />' +
-              '<button class="btn" id="speed-save">Guardar velocidad</button>' +
-            '</div>' +
-            '<div class="admin-maint-error" id="speed-error"></div>' +
-          "</div>" +
-          '<div class="admin-maint"><b>Portal de mantenimiento</b>' +
-            '<div class="admin-maint-state">' +
-              (world.maintenance && world.maintenance.active ? "Activo ahora" : "Inactivo") +
-            "</div>" +
-            '<textarea id="maint-message-input" rows="2" placeholder="Mensaje para los jugadores">' +
-              escapeHtml((world.maintenance && world.maintenance.message) || "") +
-            "</textarea>" +
-            '<input id="maint-password-input" type="password" autocomplete="new-password" ' +
-              'placeholder="Contraseña de acceso (vacío = sin contraseña)" />' +
-            '<button class="btn" id="maint-toggle">' +
-              (world.maintenance && world.maintenance.active ? "Desactivar mantenimiento" : "Activar mantenimiento") +
-            "</button>" +
-            '<div class="admin-maint-error" id="maint-error"></div>' +
-          "</div>" +
-          '<div class="admin-phones"><b>Jugadores registrados (' + world.phones.length + ")</b>" +
-            (world.phones.length
-              ? world.phones
-                  .map(function (row) {
-                    return (
-                      '<div class="admin-row"><span><b class="pname">' + escapeHtml(String(row.name)) +
-                        '</b> · ' + escapeHtml(String(row.phone)) +
-                        (row.region != null ? " · R" + escapeHtml(String(row.region)) : "") +
-                      "</span>" +
-                      (row.id
-                        ? '<button class="btn small" data-set-pass="' + escapeHtml(String(row.id)) +
-                          '" data-pass-name="' + escapeHtml(String(row.name)) + '">Clave</button>'
-                        : "") +
-                      "<b>" + num(row.wins || 0) + " V</b></div>"
-                    );
-                  })
-                  .join("")
-              : '<div class="admin-hint">Aún no hay jugadores registrados.</div>') +
-            '<div class="admin-hint">Las contraseñas no se pueden mostrar: Supabase las guarda cifradas. ' +
-              "Si un jugador la olvida, restablécala desde el panel de Supabase (Authentication → Users).</div>" +
-          "</div>" +
         "</div>";
     }
 
@@ -2236,42 +2267,6 @@
       });
     });
 
-    var speedSave = document.getElementById("speed-save");
-    if (speedSave) {
-      speedSave.addEventListener("click", function () {
-        var input = document.getElementById("speed-input");
-        var errorEl = document.getElementById("speed-error");
-        var speed = input ? Number(input.value) : NaN;
-        if (!isFinite(speed) || speed < 0.1 || speed > 10) {
-          if (errorEl) errorEl.textContent = "La velocidad debe estar entre 0.1 y 10.";
-          return;
-        }
-        if (errorEl) errorEl.textContent = "";
-        adminAction("admin_set_resource_speed", { p_speed: speed });
-      });
-    }
-
-    var maintToggle = document.getElementById("maint-toggle");
-    if (maintToggle) {
-      maintToggle.addEventListener("click", function () {
-        var messageEl = document.getElementById("maint-message-input");
-        var passwordEl = document.getElementById("maint-password-input");
-        var errorEl = document.getElementById("maint-error");
-        var active = !(world.maintenance && world.maintenance.active);
-        var password = passwordEl ? String(passwordEl.value || "") : "";
-        if (active && !password.trim()) {
-          if (errorEl) errorEl.textContent = "Escribe una contraseña para activar el mantenimiento.";
-          return;
-        }
-        if (errorEl) errorEl.textContent = "";
-        adminAction("admin_set_maintenance", {
-          p_active: active,
-          p_message: messageEl ? messageEl.value : "",
-          p_password: password,
-        });
-      });
-    }
-
     var backBtn = document.getElementById("map-back-btn");
     if (backBtn) backBtn.addEventListener("click", function () {
       openRegionId = null;
@@ -2307,6 +2302,12 @@
       });
     });
 
+    var settingsBtn = document.getElementById("admin-settings-btn");
+    if (settingsBtn) settingsBtn.addEventListener("click", function () {
+      view = "admin";
+      renderGame();
+    });
+
     var adminBtn = document.getElementById("admin-mode-btn");
     if (adminBtn) adminBtn.addEventListener("click", function () {
       adminMode = !adminMode;
@@ -2317,19 +2318,6 @@
       var url = window.prompt("URL de la nueva imagen del mapa (vacío = imagen por defecto)", mapImageUrl());
       if (url === null) return;
       adminAction("admin_set_map_image", { url: url });
-    });
-    Array.prototype.forEach.call(app.querySelectorAll("[data-set-pass]"), function (button) {
-      button.addEventListener("click", function () {
-        var who = button.getAttribute("data-pass-name") || "el jugador";
-        var pass = window.prompt("Nueva contraseña para " + who + " (mínimo 6 caracteres)");
-        if (pass === null) return;
-        if (String(pass).length < 6) {
-          pvpResult = { ok: false, text: "La contraseña debe tener al menos 6 caracteres." };
-          renderGame();
-          return;
-        }
-        adminAction("admin_set_password", { target_id: button.getAttribute("data-set-pass"), new_password: pass });
-      });
     });
     Array.prototype.forEach.call(app.querySelectorAll("[data-lock-region]"), function (button) {
       button.addEventListener("click", function () {
@@ -2474,10 +2462,12 @@
       ["mapa", "Mapa"],
       ["raza", "Raza"],
     ];
+    if (session && session.isAdmin) tabs.push(["admin", "Administrar WoW"]);
     var center;
     if (view === "cuartel") center = troopsView();
     else if (view === "mapa") center = mapView();
     else if (view === "raza") center = raceView();
+    else if (view === "admin" && session && session.isAdmin) center = adminView();
     else center = buildingsView();
 
     var prod = totalProduction(state);
@@ -2541,11 +2531,68 @@
     if (powerEl) powerEl.textContent = num(armyPower(state));
   }
 
+  function bindAdminSettings() {
+    var speedSave = document.getElementById("speed-save");
+    if (speedSave) {
+      speedSave.addEventListener("click", function () {
+        var input = document.getElementById("speed-input");
+        var errorEl = document.getElementById("speed-error");
+        var speed = input ? Number(input.value) : NaN;
+        if (!isFinite(speed) || speed < 0.1 || speed > 10) {
+          if (errorEl) errorEl.textContent = "La velocidad debe estar entre 0.1 y 10.";
+          return;
+        }
+        if (errorEl) errorEl.textContent = "";
+        adminAction("admin_set_resource_speed", { p_speed: speed });
+      });
+    }
+
+    var maintToggle = document.getElementById("maint-toggle");
+    if (maintToggle) {
+      maintToggle.addEventListener("click", function () {
+        var messageEl = document.getElementById("maint-message-input");
+        var passwordEl = document.getElementById("maint-password-input");
+        var errorEl = document.getElementById("maint-error");
+        var active = !(world.maintenance && world.maintenance.active);
+        var password = passwordEl ? String(passwordEl.value || "") : "";
+        if (active && !password.trim()) {
+          if (errorEl) errorEl.textContent = "Escribe una contraseña para activar el mantenimiento.";
+          return;
+        }
+        if (errorEl) errorEl.textContent = "";
+        adminAction("admin_set_maintenance", {
+          p_active: active,
+          p_message: messageEl ? messageEl.value : "",
+          p_password: password,
+        });
+      });
+    }
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-set-pass]"), function (button) {
+      button.addEventListener("click", function () {
+        var who = button.getAttribute("data-pass-name") || "el jugador";
+        var pass = window.prompt("Nueva contraseña para " + who + " (mínimo 6 caracteres)");
+        if (pass === null) return;
+        if (String(pass).length < 6) {
+          pvpResult = { ok: false, text: "La contraseña debe tener al menos 6 caracteres." };
+          renderGame();
+          return;
+        }
+        adminAction("admin_set_password", { target_id: button.getAttribute("data-set-pass"), new_password: pass });
+      });
+    });
+  }
+
   function bindGameEvents() {
     Array.prototype.forEach.call(app.querySelectorAll("[data-view]"), function (button) {
       button.addEventListener("click", function () {
         view = button.getAttribute("data-view");
         if (view === "mapa" && isCloud()) syncWorld();
+        if (view === "admin" && isCloud() && (!world.at || now() - world.at > 5000)) {
+          syncWorld().then(function () {
+            if (view === "admin") renderGame();
+          });
+        }
         renderGame();
       });
     });
@@ -2565,6 +2612,7 @@
         trainTroop(button.getAttribute("data-train"), Number(button.getAttribute("data-amount")));
       });
     });
+    bindAdminSettings();
     initMap();
   }
 

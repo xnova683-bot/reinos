@@ -1282,6 +1282,20 @@ input {
   margin-bottom: 0.9rem;
 }
 
+.admin-page .panel-body {
+  display: grid;
+  gap: 0.8rem;
+  padding: 0.9rem 1rem 1.1rem;
+}
+
+.admin-page .admin-maint {
+  margin: 0;
+}
+
+.admin-page .admin-phones {
+  margin-top: 0;
+}
+
 .admin-maint {
   display: grid;
   gap: 0.5rem;

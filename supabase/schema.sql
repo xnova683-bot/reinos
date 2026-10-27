@@ -1549,12 +1549,17 @@ declare
   px numeric := least(0.995, greatest(0.005, nx));
   py numeric := least(0.995, greatest(0.005, ny));
   reg integer;
+  current_region integer;
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
+  select n.region_id into current_region from public.npcs n where n.id = target_id;
+  if not found then raise exception 'npc not found'; end if;
 
   reg := public.region_at(px, py);
 
-  if reg is null then raise exception 'outside region'; end if;
+  if reg is null or reg is distinct from current_region then
+    raise exception 'outside region';
+  end if;
 
   update public.npcs
     set x = px, y = py,

@@ -1856,7 +1856,7 @@
               ? "El castillo debe quedar dentro de su propia región."
               : fn === "admin_move_village"
                 ? "La aldea debe quedar dentro de su propia región."
-                : "El NPC debe quedar dentro de una región del mapa.";
+                : "El NPC debe quedar dentro de su propia región.";
           } else if (adminError.indexOf("castle not found") !== -1) {
             adminError = "Ese castillo ya no existe.";
           } else if (adminError.indexOf("village not found") !== -1) {
@@ -2061,7 +2061,7 @@
 
     var mePos = session && session.village ? session.village : { x: 0.5, y: 0.5 };
     var myName = (session && session.username) || "Tu aldea";
-    var meMarker = !(session && session.village) || session.isAdmin ? "" :
+    var meMarker = !(session && session.village) ? "" :
       '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
         'title="Tu aldea" ' +
         'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +

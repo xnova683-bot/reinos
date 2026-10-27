@@ -1374,6 +1374,10 @@ input {
   padding: 0.05rem 0.5rem;
 }
 
+.kb-line b {
+  color: var(--gold);
+}
+
 .admin-page .panel-body {
   display: grid;
   gap: 0.8rem;

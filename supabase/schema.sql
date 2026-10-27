@@ -26,6 +26,7 @@ alter table public.profiles add column if not exists last_seen timestamptz;
 alter table public.profiles add column if not exists shield_until timestamptz;
 alter table public.profiles add column if not exists pvp_wins integer not null default 0;
 alter table public.profiles add column if not exists pvp_losses integer not null default 0;
+alter table public.profiles add column if not exists kb bigint not null default 0;
 
 create table if not exists public.regions (
   id serial primary key,
@@ -421,6 +422,27 @@ create trigger profiles_guard_admin
   before insert or update on public.profiles
   for each row execute function public.guard_admin_flag();
 
+-- La KB solo la puede entregar el administrador
+create or replace function public.guard_kb()
+returns trigger
+language plpgsql
+as $fn$
+begin
+  if tg_op = 'INSERT' then
+    return new;
+  end if;
+  if new.kb is distinct from old.kb and not coalesce(public.is_admin(), false) then
+    raise exception 'not allowed';
+  end if;
+  return new;
+end;
+$fn$;
+
+drop trigger if exists profiles_guard_kb on public.profiles;
+create trigger profiles_guard_kb
+  before insert or update on public.profiles
+  for each row execute function public.guard_kb();
+
 -- ============================================================
 -- Estado del mundo: regiones, ajustes, aldeas y actividad
 -- ============================================================
@@ -444,6 +466,7 @@ begin
       select jsonb_build_object(
         'id', p.id, 'admin', p.is_admin, 'region', p.region_id,
         'wins', p.pvp_wins,
+        'kb', p.kb,
         'shield', (p.shield_until is not null and p.shield_until > now())
       )
       from public.profiles p where p.id = uid
@@ -528,7 +551,8 @@ begin
         'name', coalesce(nullif(p.username, ''), '—'),
         'phone', coalesce(p.phone, '—'),
         'region', p.region_id,
-        'wins', p.pvp_wins
+        'wins', p.pvp_wins,
+        'kb', p.kb
       ) order by p.updated_at desc)
       from public.profiles p
       where (select coalesce(a.is_admin, false) from public.profiles a where a.id = uid)
@@ -1228,6 +1252,30 @@ end;
 $fn$;
 
 grant execute on function public.admin_move_npc(uuid, numeric, numeric) to authenticated;
+
+create or replace function public.admin_grant_kb(target_id uuid, amount bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  balance bigint;
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+  if amount = 0 then raise exception 'amount required'; end if;
+
+  update public.profiles
+    set kb = greatest(0, kb + amount), updated_at = now()
+  where id = target_id
+  returning kb into balance;
+  if not found then raise exception 'player not found'; end if;
+
+  return jsonb_build_object('ok', true, 'kb', balance);
+end;
+$fn$;
+
+grant execute on function public.admin_grant_kb(uuid, bigint) to authenticated;
 
 create or replace function public.admin_set_resource_speed(p_speed numeric)
 returns jsonb

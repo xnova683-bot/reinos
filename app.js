@@ -465,7 +465,7 @@
 
   function cloudLoadProfile(token, userId) {
     return api(
-      "/rest/v1/profiles?id=eq." + encodeURIComponent(userId) + "&select=race,state,username,x,y,region_id,is_admin",
+      "/rest/v1/profiles?id=eq." + encodeURIComponent(userId) + "&select=race,state,username,x,y,region_id,is_admin,kb",
       { token: token }
     );
   }
@@ -537,6 +537,7 @@
       username: name || (email === "admin@reinos.local" ? "admin" : "") || phone ||
         (auth.user.user_metadata && auth.user.user_metadata.username) || email.split("@")[0],
       expiresAt: now() + (auth.expires_in || 3600) * 1000,
+      kb: 0,
     };
     account = session.phone || (email === "admin@reinos.local" ? "admin" : email);
     writeJSON(SESSION_KEY, session);
@@ -566,6 +567,7 @@
       state.race = row.race || state.race;
       session.username = row.username || session.username;
       session.isAdmin = !!row.is_admin;
+      session.kb = Number(row.kb || 0);
       session.region = row.region_id;
       if (row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
       writeJSON(SESSION_KEY, session);
@@ -876,6 +878,7 @@
                 }
                 session.village = { x: Number(row.x), y: Number(row.y) };
                 session.isAdmin = !!row.is_admin;
+                session.kb = Number(row.kb || 0);
                 session.region = row.region_id;
                 writeJSON(SESSION_KEY, session);
                 enterGame();
@@ -1176,6 +1179,9 @@
             '<div class="info-line"><span>Almacenamiento</span><b id="storage-line">' +
               num(Math.floor(Math.max.apply(null, RESOURCES.map(function (r) { return state.res[r]; })))) +
               " / " + num(limit) + "</b></div>" +
+            '<div class="info-line kb-line"><span>KB · moneda del rey</span><b id="kb-line">' +
+              num((session && session.kb) || 0) + "</b></div>" +
+            '<div class="mini-note">La KB no se produce: solo el administrador puede entregártela.</div>' +
             '<button class="btn" id="gather-btn">Recolectar recursos</button>' +
             '<button class="btn" id="daily-btn">Reclamar bonus diario</button>' +
             '<div class="mini-note">Velocidad de recursos del reino: <b>x' + resourceSpeed().toFixed(2) +
@@ -1436,6 +1442,7 @@
         var wasAdmin = !!(session && session.isAdmin);
         if (session) {
           session.isAdmin = !!world.me.admin;
+          if (world.me.kb != null) session.kb = Number(world.me.kb);
           session.region = world.me.region;
           writeJSON(SESSION_KEY, session);
         }
@@ -1478,7 +1485,7 @@
     if (!isCloud()) return Promise.resolve();
     return api(
       "/rest/v1/profiles?id=eq." + encodeURIComponent(session.userId) +
-        "&select=race,state,username,x,y,region_id,is_admin",
+        "&select=race,state,username,x,y,region_id,is_admin,kb",
       { token: session.token }
     ).then(function (result) {
       if (!result.ok || !Array.isArray(result.data) || !result.data[0]) return;
@@ -1487,6 +1494,7 @@
       state.race = row.race || state.race;
       session.username = row.username || session.username;
       session.isAdmin = !!row.is_admin;
+      session.kb = Number(row.kb || 0);
       session.region = row.region_id;
       if (row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
       writeJSON(SESSION_KEY, session);
@@ -1785,7 +1793,9 @@
               ? "Portal de mantenimiento actualizado."
               : fn === "admin_set_resource_speed"
                 ? "Velocidad de recursos actualizada."
-                : "Mapa actualizado.",
+                : fn === "admin_grant_kb"
+                  ? "KB entregadas al jugador."
+                  : "Mapa actualizado.",
       };
         return syncWorld().then(function () {
           renderGame();
@@ -1839,9 +1849,11 @@
                   "</span>" +
                   (row.id
                     ? '<button class="btn small" data-set-pass="' + escapeHtml(String(row.id)) +
-                      '" data-pass-name="' + escapeHtml(String(row.name)) + '">Clave</button>'
+                      '" data-pass-name="' + escapeHtml(String(row.name)) + '">Clave</button>' +
+                      '<button class="btn small" data-grant-kb="' + escapeHtml(String(row.id)) +
+                      '" data-kb-name="' + escapeHtml(String(row.name)) + '">KB</button>'
                     : "") +
-                  "<b>" + num(row.wins || 0) + " V</b></div>"
+                  "<b>" + num(row.kb || 0) + " KB</b> · <b>" + num(row.wins || 0) + " V</b></div>"
                 );
               })
               .join("")
@@ -2835,6 +2847,8 @@
     });
     var storageLine = document.getElementById("storage-line");
     if (storageLine) storageLine.textContent = num(Math.floor(maxStored)) + " / " + num(limit);
+    var kbLine = document.getElementById("kb-line");
+    if (kbLine) kbLine.textContent = num((session && session.kb) || 0);
     var powerEl = document.getElementById("army-power");
     if (powerEl) powerEl.textContent = num(armyPower(state));
   }
@@ -2887,6 +2901,21 @@
           return;
         }
         adminAction("admin_set_password", { target_id: button.getAttribute("data-set-pass"), new_password: pass });
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-grant-kb]"), function (button) {
+      button.addEventListener("click", function () {
+        var who = button.getAttribute("data-kb-name") || "el jugador";
+        var raw = window.prompt("KB para " + who + " (positivo entrega, negativo quita)");
+        if (raw === null) return;
+        var amount = Math.trunc(Number(raw));
+        if (!amount || !isFinite(amount)) {
+          pvpResult = { ok: false, text: "Escribe una cantidad de KB distinta de cero." };
+          renderGame();
+          return;
+        }
+        adminAction("admin_grant_kb", { target_id: button.getAttribute("data-grant-kb"), amount: amount });
       });
     });
   }
@@ -2958,6 +2987,7 @@
           username: saved.username || saved.phone || saved.email.split("@")[0],
           isAdmin: saved.isAdmin,
           expiresAt: saved.expiresAt,
+          kb: Number(saved.kb || 0),
         };
         account = session.phone || (saved.email === "admin@reinos.local" ? "admin" : saved.email);
         writeJSON(SESSION_KEY, session);
@@ -2984,6 +3014,7 @@
           state.race = row.race || state.race;
           session.username = row.username || session.username;
           session.isAdmin = !!row.is_admin;
+          session.kb = Number(row.kb || 0);
           session.region = row.region_id;
           if (row.x == null) {
             session = null;

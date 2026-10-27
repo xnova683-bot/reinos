@@ -949,6 +949,143 @@ input {
   pointer-events: none;
 }
 
+.map-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  pointer-events: none;
+  user-select: none;
+}
+
+.region-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.region-poly {
+  fill: rgba(216, 189, 82, 0.04);
+  stroke: rgba(216, 189, 82, 0.55);
+  stroke-width: 0.22;
+  vector-effect: non-scaling-stroke;
+  transition: fill 0.15s ease;
+}
+
+.region-poly:hover {
+  fill: rgba(216, 189, 82, 0.12);
+}
+
+.region-poly.locked {
+  fill: rgba(4, 4, 8, 0.62);
+  stroke: rgba(150, 150, 165, 0.35);
+  stroke-dasharray: 2 1.4;
+}
+
+.worldmap.editing .region-poly {
+  cursor: move;
+}
+
+.region-tag {
+  position: absolute;
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+  transform-origin: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.05rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 6px;
+  background: rgba(10, 9, 16, 0.72);
+  border: 1px solid rgba(216, 189, 82, 0.35);
+  font-size: 0.68rem;
+  color: var(--text-sub);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.region-tag b {
+  color: var(--gold);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.region-tag.locked {
+  background: rgba(6, 6, 10, 0.82);
+  border-color: rgba(150, 150, 165, 0.3);
+}
+
+.region-tag.locked b {
+  color: #9a9aa8;
+}
+
+.admin-panel {
+  margin: 0 1rem 0.7rem;
+  padding: 0.7rem;
+  border: 1px solid rgba(216, 189, 82, 0.4);
+  border-radius: 8px;
+  background: rgba(216, 189, 82, 0.06);
+}
+
+.admin-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.admin-head b {
+  color: var(--gold);
+  margin-right: auto;
+}
+
+.admin-head .btn.active {
+  border-color: var(--gold);
+  color: var(--gold);
+  background: rgba(216, 189, 82, 0.14);
+}
+
+.admin-regions {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 0.3rem 0.8rem;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.admin-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  color: var(--text-sub);
+}
+
+.admin-row span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn.small {
+  padding: 0.2rem 0.45rem;
+  font-size: 0.7rem;
+}
+
+.admin-hint {
+  margin-top: 0.5rem;
+  font-size: 0.74rem;
+  color: var(--gold);
+}
+
+.map-legend .dot.open { background: #4caf72; }
+.map-legend .dot.locked { background: #6a6a7a; }
+
 .marker {
   position: absolute;
   display: flex;

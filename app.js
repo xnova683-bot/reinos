@@ -144,16 +144,6 @@
   var QUEUE_LIMIT = 4;
   var DAILY_COOLDOWN_MS = 20 * 60 * 60 * 1000;
 
-  var CAMP_NAMES = [
-    ["Campamento saqueador", "easy"],
-    ["Ruinas de Ventorroto", "easy"],
-    ["Fortaleza de Khar", "mid"],
-    ["Guarida de la Grieta", "mid"],
-    ["Ciudadela de Ceniza", "hard"],
-    ["Trono del Déspota", "hard"],
-    ["Abismo de Hierro", "hard"],
-  ];
-
   var app = document.getElementById("app");
   var session = null;
   var account = null;
@@ -497,7 +487,7 @@
 
   function cloudLoadProfile(token, userId) {
     return api(
-      "/rest/v1/profiles?id=eq." + encodeURIComponent(userId) + "&select=race,state,username,x,y",
+      "/rest/v1/profiles?id=eq." + encodeURIComponent(userId) + "&select=race,state,username,x,y,region_id,is_admin",
       { token: token }
     );
   }
@@ -511,6 +501,7 @@
         {
           id: userId,
           username: username,
+          email: (session && session.email) || null,
           race: race,
           state: gameState,
           updated_at: new Date().toISOString(),
@@ -589,8 +580,18 @@
       state = migrateState(row.state && row.state.race ? row.state : newState(row.race));
       state.race = row.race || state.race;
       session.username = row.username || session.username;
+      session.isAdmin = !!row.is_admin;
+      session.region = row.region_id;
       if (row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
       writeJSON(SESSION_KEY, session);
+      if (row.x == null) {
+        session = null;
+        account = null;
+        localStorage.removeItem(SESSION_KEY);
+        authError = "No hay plazas libres: todas las regiones abiertas están completas. Pide al administrador que abra otra región.";
+        renderAuth();
+        return;
+      }
       var offline = applyOffline(state);
       if (offline.minutes >= 1) {
         addLog(
@@ -934,7 +935,17 @@
               session.username = session.username || cloudPending.email.split("@")[0];
               return cloudLoadProfile(session.token, session.userId).then(function (profile) {
                 var row = profile.ok && Array.isArray(profile.data) ? profile.data[0] : null;
-                if (row && row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
+                if (!row || row.x == null) {
+                  session = null;
+                  account = null;
+                  localStorage.removeItem(SESSION_KEY);
+                  authError = "No hay plazas libres en las regiones abiertas. Pide al administrador que abra otra región.";
+                  renderAuth();
+                  return;
+                }
+                session.village = { x: Number(row.x), y: Number(row.y) };
+                session.isAdmin = !!row.is_admin;
+                session.region = row.region_id;
                 writeJSON(SESSION_KEY, session);
                 enterGame();
               });
@@ -1213,77 +1224,6 @@
     renderGame();
   }
 
-  function campList() {
-    var townhall = state.buildings.ayuntamiento;
-    var basePower = 90 + (townhall - 1) * 130 + state.campsCleared * 25;
-    return CAMP_NAMES.map(function (entry, index) {
-      var tier = entry[1];
-      var factor = tier === "easy" ? 1 : tier === "mid" ? 1.9 : 3.1;
-      var power = Math.round(basePower * factor + index * 45);
-      var loot = Math.round(power * 1.5 + 150);
-      return {
-        id: index,
-        name: entry[0],
-        tier: tier,
-        power: power,
-        loot: loot,
-      };
-    });
-  }
-
-  function raid(campId) {
-    if (!state) return;
-    var camp = campList()[campId];
-    if (!camp) return;
-    var power = armyPower(state);
-    if (power <= 0) {
-      addLog("No tienes tropas. Entrena un ejército en el Cuartel.", "bad");
-      renderGame();
-      return;
-    }
-    var roll = 0.9 + Math.random() * 0.2;
-    var effective = power * roll;
-    var total = armyCount(state);
-    var won = effective > camp.power;
-    var lossFraction;
-    if (won) {
-      lossFraction = clamp((camp.power / effective) * 0.3, 0.02, 0.55);
-    } else {
-      lossFraction = clamp(0.45 + (camp.power / effective) * 0.25, 0.45, 0.85);
-    }
-
-    var losses = 0;
-    Object.keys(TROOPS).forEach(function (key) {
-      var count = state.troops[key] || 0;
-      var dead = Math.min(count, Math.round(count * lossFraction));
-      state.troops[key] = count - dead;
-      losses += dead;
-    });
-
-    if (won) {
-      var limit = storageLimit(state.buildings);
-      var share = Math.round(camp.loot / 4);
-      var gained = 0;
-      RESOURCES.forEach(function (res) {
-        var applied = Math.min(share, Math.max(0, limit - state.res[res]));
-        state.res[res] += applied;
-        gained += applied;
-      });
-      state.campsCleared += 1;
-      addLog(
-        "Victoria en " + camp.name + ": saqueaste " + num(gained) + " recursos. Bajas: " + losses + "/" + total + ".",
-        "good"
-      );
-    } else {
-      addLog(
-        "Derrota en " + camp.name + ". Perdiste " + losses + " de " + total + " tropas y no hubo botín.",
-        "bad"
-      );
-    }
-    saveGame();
-    renderGame();
-  }
-
   /* ---------------- rendering ---------------- */
 
   function escapeHtml(text) {
@@ -1356,7 +1296,6 @@
 
   function villagers() {
     var power = armyPower(state);
-    var camp = campList();
     return (
       '<aside class="col">' +
         '<div class="panel">' +
@@ -1364,16 +1303,24 @@
           '<div class="panel-body">' +
             '<div class="info-line"><span>Poder de combate</span><b id="army-power">' + num(power) + "</b></div>" +
             '<div class="info-line"><span>Unidades</span><b>' + num(armyCount(state)) + " / " + num(troopCap(state.buildings.cuartel)) + "</b></div>" +
-            '<div class="info-line"><span>Incursiones ganadas</span><b>' + num(state.campsCleared) + "</b></div>" +
+            '<div class="info-line"><span>Victorias PvP</span><b>' + num(world.me ? world.me.wins || 0 : 0) + "</b></div>" +
             '<div class="mini-note">La ' + RACES[state.race].name + " aplica x" + RACES[state.race].atk.toFixed(2) +
               " a ataque, x" + RACES[state.race].def.toFixed(2) + " a defensa y x" + RACES[state.race].hp.toFixed(2) + " a vida.</div>" +
           "</div>" +
         "</div>" +
         '<div class="panel">' +
-          '<div class="panel-head"><h2>Objetivo cercano</h2></div>' +
+          '<div class="panel-head"><h2>Rivales</h2><span class="hint">' + num(world.players.length) + " en el mundo</span></div>" +
           '<div class="panel-body">' +
-            '<div class="info-line"><span>' + camp[0].name + "</span><b>" + num(camp[0].power) + " poder</b></div>" +
-            '<div class="mini-note">Poder recomendado: ' + num(Math.round(camp[0].power / 1.1)) + " o más.</div>" +
+            (world.players.length
+              ? world.players
+                  .slice(0, 4)
+                  .map(function (player) {
+                    var dif = armyPower(state) / Math.max(1, player.power);
+                    return '<div class="info-line"><span>' + escapeHtml(player.name) + "</span><b>" +
+                      (dif >= 1.1 ? "Ventaja" : dif >= 0.85 ? "Parejo" : "Peligroso") + " · " + num(player.power) + "</b></div>";
+                  })
+                  .join("")
+              : '<div class="mini-note">Conecta con la nube para ver a otros jugadores y atacarlos desde el mapa.</div>') +
           "</div>" +
         "</div>" +
       "</aside>"
@@ -1508,40 +1455,23 @@
     );
   }
 
-  function campsView() {
-    var power = armyPower(state);
-    var cards = campList()
-      .map(function (camp) {
-        var odds = Math.round(clamp((power / camp.power) * 100, 1, 99));
-        return (
-          '<div class="camp">' +
-            '<div class="crow"><span class="cname">' + camp.name + '</span><span class="tag ' + camp.tier + '">' +
-              (camp.tier === "easy" ? "Fácil" : camp.tier === "mid" ? "Medio" : "Difícil") + "</span></div>" +
-            '<div class="info-line"><span>Poder enemigo</span><b>' + num(camp.power) + "</b></div>" +
-            '<div class="info-line"><span>Botín estimado</span><b>' + num(camp.loot) + "</b></div>" +
-            '<div class="info-line"><span>Probabilidad</span><b>' + odds + "%</b></div>" +
-            '<button class="btn" data-raid="' + camp.id + '">Atacar</button>' +
-          "</div>"
-        );
-      })
-      .join("");
-
-    return (
-      '<div class="panel">' +
-        '<div class="panel-head"><h2>Incursiones</h2><span class="hint">Tu poder: ' + num(power) + "</span></div>" +
-        '<div class="panel-body"><div class="building-grid">' + cards + "</div></div>" +
-      "</div>"
-    );
-  }
-
   /* ---------------- mundo compartido ---------------- */
 
-  var world = { players: [], events: [], online: 0, at: 0, error: "" };
+  var world = {
+    players: [], regions: [], events: [], online: 0,
+    settings: {}, me: {}, at: 0, error: "",
+  };
   var worldTimer = null;
   var pvpTarget = null;
   var pvpResult = null;
   var pvpBusy = false;
   var mapFitted = false;
+  var adminMode = false;
+  var itemDrag = null;
+  var mapWrapEl = null;
+  var mapStageEl = null;
+  var mapTransform = { x: 0, y: 0, scale: 1 };
+  var mapFitScale = 1;
 
   function isCloud() {
     return !!(session && session.mode === "cloud" && session.token);
@@ -1549,7 +1479,7 @@
 
   function syncWorld() {
     if (!isCloud()) return Promise.resolve();
-    return api("/rest/v1/rpc/world_snapshot", { method: "POST", token: session.token, body: {} })
+    return api("/rest/v1/rpc/world_state", { method: "POST", token: session.token, body: {} })
       .then(function (result) {
         if (!result.ok) {
           world.error =
@@ -1561,11 +1491,19 @@
         }
         var data = result.data || {};
         world.players = Array.isArray(data.players) ? data.players : [];
+        world.regions = Array.isArray(data.regions) ? data.regions : [];
         world.events = Array.isArray(data.events) ? data.events : [];
         world.online = Number(data.online || 0);
+        world.settings = data.settings || {};
+        world.me = data.me || {};
         world.at = now();
         world.error = "";
-        if (view === "mapa" && !mapEdit) renderGame();
+        if (session) {
+          session.isAdmin = !!world.me.admin;
+          session.region = world.me.region;
+          writeJSON(SESSION_KEY, session);
+        }
+        if (view === "mapa" && !adminMode) renderGame();
       })
       .catch(function () {
         world.error = "Sin conexión con el mundo compartido.";
@@ -1584,15 +1522,17 @@
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
-    world = { players: [], events: [], online: 0, at: 0, error: "" };
+    world = { players: [], regions: [], events: [], online: 0, settings: {}, me: {}, at: 0, error: "" };
     pvpTarget = null;
     pvpResult = null;
+    adminMode = false;
   }
 
   function refreshOwnProfile() {
     if (!isCloud()) return Promise.resolve();
     return api(
-      "/rest/v1/profiles?id=eq." + encodeURIComponent(session.userId) + "&select=race,state,username,x,y",
+      "/rest/v1/profiles?id=eq." + encodeURIComponent(session.userId) +
+        "&select=race,state,username,x,y,region_id,is_admin",
       { token: session.token }
     ).then(function (result) {
       if (!result.ok || !Array.isArray(result.data) || !result.data[0]) return;
@@ -1600,6 +1540,8 @@
       state = migrateState(row.state);
       state.race = row.race || state.race;
       session.username = row.username || session.username;
+      session.isAdmin = !!row.is_admin;
+      session.region = row.region_id;
       if (row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
       writeJSON(SESSION_KEY, session);
       refreshNumbers();
@@ -1627,7 +1569,8 @@
       pvpBusy = false;
       if (!result.ok) {
         var message = cloudErrorMessage(result);
-        if (message.indexOf("shielded") !== -1) message = "Ese jugador sigue protegido por su escudo inicial.";
+        if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
+        else if (message.indexOf("shielded") !== -1) message = "Ese jugador sigue protegido por su escudo inicial.";
         else if (message.indexOf("cooldown") !== -1) message = "Ya atacaste a ese jugador hace menos de 5 minutos.";
         else if (message.indexOf("no troops") !== -1) message = "No tienes tropas para atacar.";
         pvpResult = { ok: false, text: message };
@@ -1639,8 +1582,7 @@
         ok: true,
         win: !!data.win,
         text:
-          (data.win ? "Victoria" : "Derrota") +
-          " contra " + (data.target || "el rival") +
+          (data.win ? "Victoria" : "Derrota") + " contra " + (data.target || "el rival") +
           (data.win ? " · botín " + num(data.loot || 0) : "") +
           " · bajas " + num(data.attacker_losses || 0) + "/" + num(data.defender_losses || 0),
       };
@@ -1655,118 +1597,112 @@
     });
   }
 
-  /* ---------------- world map ---------------- */
+  /* ---------------- mapa por regiones ---------------- */
 
   var MAP_W = 3182;
   var MAP_H = 2249;
 
-  var REGION_COLS = 5;
-  var REGION_ROWS = 2;
-  var REGION_GAP = 0.02;
-  var REGION_W = 0.168;
-  var REGION_H = 0.345;
-  var REGION_X0 = 0.04;
-  var REGION_Y0 = 0.14;
-
-  var REGION_NAMES = [
-    ["Cumbres de Khar", "horda"],
-    ["Estepas Rojas", "horda"],
-    ["Bosque de Espinas", "horda"],
-    ["Ceniza Negra", "horda"],
-    ["Valle Dorado", "alianza"],
-    ["Costa de Plata", "alianza"],
-    ["Llanura del Alba", "alianza"],
-    ["Forja Profunda", "enanos"],
-    ["Picos de Hierro", "enanos"],
-    ["Cavernas de Ámbar", "enanos"],
-  ];
-
-  var REGIONS = REGION_NAMES.map(function (entry, index) {
-    var col = index % REGION_COLS;
-    var row = Math.floor(index / REGION_COLS);
-    var x0 = REGION_X0 + col * (REGION_W + REGION_GAP);
-    var y0 = REGION_Y0 + row * (REGION_H + REGION_GAP);
-    return {
-      index: index,
-      name: entry[0],
-      race: entry[1],
-      x0: x0,
-      x1: x0 + REGION_W,
-      y0: y0,
-      y1: y0 + REGION_H,
-    };
-  });
+  function regionById(id) {
+    var found = null;
+    world.regions.forEach(function (region) {
+      if (String(region.id) === String(id)) found = region;
+    });
+    return found;
+  }
 
   function regionAt(x, y) {
-    for (var i = 0; i < REGIONS.length; i++) {
-      var r = REGIONS[i];
-      if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) return r;
-    }
-    return null;
-  }
-  var MAP_DEFAULTS = [
-    { x: 0.28, y: 0.3 },
-    { x: 0.66, y: 0.24 },
-    { x: 0.8, y: 0.5 },
-    { x: 0.2, y: 0.6 },
-    { x: 0.48, y: 0.78 },
-    { x: 0.84, y: 0.8 },
-    { x: 0.14, y: 0.4 },
-  ];
-  var MAP_VILLAGE = { x: 0.5, y: 0.46 };
-
-  var mapTransform = { x: 0, y: 0, scale: 1 };
-  var mapFitScale = 1;
-  var mapEdit = false;
-  var mapSelected = null;
-  var mapWrapEl = null;
-  var mapStageEl = null;
-
-  function campPosition(index) {
-    var saved = state.map && state.map.camps ? state.map.camps[index] : null;
-    if (saved && typeof saved.x === "number" && typeof saved.y === "number") return saved;
-    return MAP_DEFAULTS[index] || { x: 0.5, y: 0.5 };
+    var found = null;
+    world.regions.forEach(function (region) {
+      if (found) return;
+      var bb = region.bbox || {};
+      if (x >= bb.x0 && x <= bb.x1 && y >= bb.y0 && y <= bb.y1) found = region;
+    });
+    return found;
   }
 
-  function villagePosition() {
-    var saved = state.map ? state.map.village : null;
-    if (saved && typeof saved.x === "number" && typeof saved.y === "number") return saved;
-    return MAP_VILLAGE;
+  function polygonPoints(region) {
+    return (region.points || [])
+      .map(function (pt) {
+        return (Number(pt[0]) * 100).toFixed(3) + "," + (Number(pt[1]) * 100).toFixed(3);
+      })
+      .join(" ");
+  }
+
+  function polygonCentroid(region) {
+    var pts = region.points || [];
+    if (!pts.length) return { x: 0.5, y: 0.5 };
+    var x = 0;
+    var y = 0;
+    pts.forEach(function (pt) {
+      x += Number(pt[0]);
+      y += Number(pt[1]);
+    });
+    return { x: x / pts.length, y: y / pts.length };
+  }
+
+  function mapImageUrl() {
+    return (world.settings && world.settings.map) || "./assets/map.jpg";
+  }
+
+  function adminAction(fn, body) {
+    if (!isCloud() || !session.isAdmin) return Promise.resolve();
+    return api("/rest/v1/rpc/" + fn, { method: "POST", token: session.token, body: body })
+      .then(function (result) {
+        if (!result.ok) {
+          pvpResult = { ok: false, text: cloudErrorMessage(result) };
+          renderGame();
+          return;
+        }
+        pvpResult = { ok: true, win: true, text: "Mapa actualizado." };
+        return syncWorld().then(function () {
+          renderGame();
+        });
+      });
   }
 
   function mapView() {
     var power = armyPower(state);
-    var markers = campList()
-      .map(function (camp) {
-        var pos = campPosition(camp.id);
-        var odds = Math.round(clamp((power / camp.power) * 100, 1, 99));
+    var unlocked = {};
+    world.regions.forEach(function (region) {
+      if (!region.locked) unlocked[region.id] = true;
+    });
+
+    var polygons = world.regions
+      .map(function (region) {
         return (
-          '<button class="marker ' + camp.tier + '" data-map-camp="' + camp.id + '" ' +
-            'title="' + escapeHtml(camp.name) + ' · Poder ' + num(camp.power) + " · " + odds + '%" ' +
-            'data-mx="' + pos.x + '" data-my="' + pos.y + '" ' +
-            'style="left:' + (pos.x * 100).toFixed(2) + "%;top:" + (pos.y * 100).toFixed(2) + '%">' +
-            '<span class="mlabel">' + escapeHtml(camp.name) + "</span>" +
-            '<span class="pin"></span>' +
-          "</button>"
+          '<polygon class="region-poly' + (region.locked ? " locked" : "") + '" data-region="' + region.id + '" ' +
+            'points="' + polygonPoints(region) + '"></polygon>'
         );
       })
       .join("");
 
-    var players = [];
-    if (isCloud()) {
-      players = world.players.filter(function (player) {
-        return String(player.id) !== String(session.userId);
-      });
-    }
+    var regionTags = world.regions
+      .map(function (region) {
+        var c = polygonCentroid(region);
+        return (
+          '<div class="region-tag' + (region.locked ? " locked" : "") + '" data-region-tag="' + region.id + '" ' +
+            'data-mx="' + c.x + '" data-my="' + c.y + '" ' +
+            'style="left:' + (c.x * 100).toFixed(2) + "%;top:" + (c.y * 100).toFixed(2) + '%">' +
+            '<b>' + escapeHtml(region.name) + "</b>" +
+            '<span>' + (region.locked ? "Bloqueada" : num(region.villages) + "/" + num(region.capacity) + " aldeas") + "</span>" +
+          "</div>"
+        );
+      })
+      .join("");
+
+    var players = world.players.filter(function (player) {
+      if (String(player.id) === String(session.userId)) return false;
+      if (unlocked[player.region] === undefined) return false;
+      return typeof player.x === "number" && typeof player.y === "number";
+    });
+
     var playerMarkers = players
       .map(function (player) {
-        if (typeof player.x !== "number" || typeof player.y !== "number") return "";
         var tag = (player.online ? "" : " offline") + (player.shield ? " shielded" : "");
         return (
           '<button class="marker player ' + player.race + tag + '" data-map-player="' + escapeHtml(player.id) + '" ' +
-            'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) +
-              (regionAt(Number(player.x), Number(player.y)) ? " · " + regionAt(Number(player.x), Number(player.y)).name : "") + '" ' +
             'data-mx="' + player.x + '" data-my="' + player.y + '" ' +
+            'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) + '" ' +
             'style="left:' + (player.x * 100).toFixed(2) + "%;top:" + (player.y * 100).toFixed(2) + '%">' +
             '<span class="mlabel">' + (player.shield ? "⛨ " : "") + escapeHtml(player.name) + "</span>" +
             '<span class="pin"></span>' +
@@ -1775,45 +1711,68 @@
       })
       .join("");
 
-    var mePos = session && session.village ? session.village : villagePosition();
+    var mePos = session && session.village ? session.village : { x: 0.5, y: 0.5 };
     var villageMarker =
-      '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" style="left:' +
-        (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
+      '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
+        'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
         '<span class="mlabel">Tu aldea</span><span class="pin"></span>' +
       "</div>";
 
-    var regionOverlays = REGIONS.map(function (region) {
-      return (
-        '<div class="region ' + region.id + '" style="left:' + (region.x0 * 100).toFixed(2) +
-          "%;top:" + (region.y0 * 100).toFixed(2) +
-          "%;width:" + ((region.x1 - region.x0) * 100).toFixed(2) +
-          "%;height:" + ((region.y1 - region.y0) * 100).toFixed(2) + '%">' +
-          '<span class="region-label">' + region.name + "</span>" +
-        "</div>"
-      );
-    }).join("");
+    var openCount = world.regions.filter(function (region) {
+      return !region.locked;
+    }).length;
 
     var statusText = isCloud()
       ? (world.error
           ? world.error
           : world.at
-            ? world.online + " en línea · " + world.players.length + " aldeas en el mundo"
+            ? world.online + " en línea · " + world.players.length + " aldeas · " +
+              openCount + "/" + world.regions.length + " regiones abiertas"
             : "Conectando con el mundo…")
-      : "Modo local: solo tú en este mapa.";
+      : "Modo local · conecta con Supabase para ver el mundo compartido";
+
+    var adminPanel = "";
+    if (session && session.isAdmin) {
+      adminPanel =
+        '<div class="admin-panel">' +
+          '<div class="admin-head"><b>Administración</b>' +
+            '<button class="btn' + (adminMode ? " active" : "") + '" id="admin-mode-btn">' +
+              (adminMode ? "Salir del modo mapa" : "Mover regiones/aldeas") +
+            "</button>" +
+            '<button class="btn" id="admin-image-btn">Cambiar imagen</button>' +
+          "</div>" +
+          '<div class="admin-regions">' +
+            world.regions
+              .map(function (region) {
+                return (
+                  '<div class="admin-row">' +
+                    "<span>" + escapeHtml(region.name) + " · " + num(region.villages) + "/" + num(region.capacity) + "</span>" +
+                    '<button class="btn small" data-lock-region="' + region.id + '" data-lock="' + (region.locked ? "0" : "1") + '">' +
+                      (region.locked ? "Desbloquear" : "Bloquear") +
+                    "</button>" +
+                  "</div>"
+                );
+              })
+              .join("") +
+          "</div>" +
+          (adminMode ? '<div class="admin-hint">Arrastra una región o una aldea para moverla.</div>' : "") +
+        "</div>";
+    }
 
     var target = pvpTarget;
     var targetCard = "";
     if (target) {
+      var targetRegion = regionById(target.region);
       targetCard =
         '<div class="pvp-card">' +
           '<div class="pvp-info"><b>' + escapeHtml(target.name || "Rival") + "</b>" +
-            '<span>' + (RACES[target.race] ? RACES[target.race].name : target.race) +
-            " · Poder " + num(target.power) + " · Victorias " + num(target.wins || 0) + "</span>" +
+            "<span>" + (RACES[target.race] ? RACES[target.race].name : target.race) +
+            " · Poder " + num(target.power) +
+            (targetRegion ? " · " + escapeHtml(targetRegion.name) : "") + "</span>" +
             (target.shield ? '<span class="pvp-warn">Escudo activo: no se puede atacar.</span>' : "") +
           "</div>" +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="pvp-attack-btn"' +
-              (target.shield || pvpBusy ? " disabled" : "") + ">" +
+            '<button class="btn-primary" id="pvp-attack-btn"' + (target.shield || pvpBusy ? " disabled" : "") + ">" +
               (pvpBusy ? "Atacando…" : "Atacar") +
             "</button>" +
             '<button class="btn" id="pvp-cancel-btn">Cancelar</button>' +
@@ -1821,8 +1780,7 @@
         "</div>";
     }
     var resultCard = pvpResult
-      ? '<div class="pvp-result ' + (pvpResult.ok && pvpResult.win ? "win" : "lose") + '">' +
-          escapeHtml(pvpResult.text) + "</div>"
+      ? '<div class="pvp-result ' + (pvpResult.ok && pvpResult.win ? "win" : "lose") + '">' + escapeHtml(pvpResult.text) + "</div>"
       : "";
 
     var feed = world.events.length
@@ -1838,36 +1796,32 @@
 
     return (
       '<div class="panel map-panel">' +
-        '<div class="panel-head"><h2>Mapa del mundo</h2>' +
-          '<span class="hint">' + escapeHtml(statusText) + "</span></div>" +
+        '<div class="panel-head"><h2>Mapa del mundo</h2><span class="hint">' + escapeHtml(statusText) + "</span></div>" +
         '<div class="map-tools">' +
-          '<button class="btn" data-map-zoom="in" aria-label="Acercar">+</button>' +
-          '<button class="btn" data-map-zoom="out" aria-label="Alejar">−</button>' +
+          '<button class="btn" data-map-zoom="in">+</button>' +
+          '<button class="btn" data-map-zoom="out">−</button>' +
           '<button class="btn" data-map-center="1">Centrar</button>' +
-          '<button class="btn' + (mapEdit ? " active" : "") + '" id="map-edit-btn">' +
-            (mapEdit ? "Terminar ajuste" : "Ajustar mapa") +
-          "</button>" +
           '<span class="map-hint" id="map-hint">' +
-            (mapEdit
-              ? "Toca un campamento y luego el punto del mapa para recolocarlo."
-              : "Toca una aldea enemiga para atacarla.") +
+            (adminMode ? "Arrastra regiones y aldeas." : "Toca una aldea enemiga para atacarla.") +
           "</span>" +
         "</div>" +
+        adminPanel +
         targetCard +
         resultCard +
-        '<div class="worldmap' + (mapEdit ? " editing" : "") + '" id="worldmap">' +
+        '<div class="worldmap' + (adminMode ? " editing" : "") + '" id="worldmap">' +
           '<div class="worldmap-stage" id="worldmap-stage" style="width:' + MAP_W + "px;height:" + MAP_H + 'px">' +
             '<div class="map-bg" aria-hidden="true"></div>' +
-            regionOverlays +
-            markers +
+            '<img class="map-image" src="' + escapeHtml(mapImageUrl()) + '" alt="" draggable="false" ' +
+              'onerror="this.style.display=\'none\'" />' +
+            '<svg class="region-svg" viewBox="0 0 100 100" preserveAspectRatio="none">' + polygons + "</svg>" +
+            regionTags +
             playerMarkers +
             villageMarker +
           "</div>" +
         "</div>" +
         '<div class="map-legend">' +
-          '<span><i class="dot easy"></i>Campamento fácil</span>' +
-          '<span><i class="dot mid"></i>Medio</span>' +
-          '<span><i class="dot hard"></i>Difícil</span>' +
+          '<span><i class="dot open"></i>Región abierta</span>' +
+          '<span><i class="dot locked"></i>Bloqueada</span>' +
           '<span><i class="dot player"></i>Jugador</span>' +
           '<span class="grow"></span><span class="hint">Tu poder: ' + num(power) + "</span>" +
         "</div>" +
@@ -1893,9 +1847,6 @@
     mapStageEl.style.transform =
       "translate(" + mapTransform.x + "px," + mapTransform.y + "px) scale(" + mapTransform.scale + ")";
     mapStageEl.style.setProperty("--inv", String(1 / mapTransform.scale));
-    if (mapStageEl.classList) {
-      mapStageEl.classList.toggle("labels", mapTransform.scale > mapFitScale * 4);
-    }
     cullMarkers();
   }
 
@@ -1903,20 +1854,20 @@
     if (!mapWrapEl || !mapWrapEl.querySelectorAll) return;
     var w = mapWrapEl.clientWidth || 900;
     var h = mapWrapEl.clientHeight || 480;
-    var markers;
+    var nodes;
     try {
-      markers = mapWrapEl.querySelectorAll(".marker");
+      nodes = mapWrapEl.querySelectorAll(".marker, .region-tag");
     } catch (err) {
       return;
     }
-    for (var i = 0; i < markers.length; i++) {
-      var el = markers[i];
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
       var mx = parseFloat(el.getAttribute("data-mx"));
       var my = parseFloat(el.getAttribute("data-my"));
       if (!isFinite(mx) || !isFinite(my)) continue;
       var sx = mx * MAP_W * mapTransform.scale + mapTransform.x;
       var sy = my * MAP_H * mapTransform.scale + mapTransform.y;
-      var visible = sx > -80 && sx < w + 80 && sy > -90 && sy < h + 90;
+      var visible = sx > -90 && sx < w + 90 && sy > -90 && sy < h + 90;
       if (el.style) el.style.display = visible ? "" : "none";
     }
   }
@@ -1941,44 +1892,24 @@
     var cy = typeof clientY === "number" ? clientY : h / 2;
     var worldX = (cx - mapTransform.x) / mapTransform.scale;
     var worldY = (cy - mapTransform.y) / mapTransform.scale;
-    var maxScale = mapFitScale * 5;
-    var next = clamp(mapTransform.scale * factor, mapFitScale, maxScale);
+    var next = clamp(mapTransform.scale * factor, mapFitScale, mapFitScale * 5);
     mapTransform.scale = next;
     mapTransform.x = cx - worldX * next;
     mapTransform.y = cy - worldY * next;
+    clampPanAndDraw();
+  }
+
+  function clampPanAndDraw() {
     clampMapPan();
     applyMap();
   }
 
-  function mapImagePoint(clientX, clientY) {
+  function mapFraction(clientX, clientY) {
     if (!mapWrapEl) return null;
-    var rect = mapWrapEl.getBoundingClientRect
-      ? mapWrapEl.getBoundingClientRect()
-      : { left: 0, top: 0 };
+    var rect = mapWrapEl.getBoundingClientRect ? mapWrapEl.getBoundingClientRect() : { left: 0, top: 0 };
     var x = (clientX - rect.left - mapTransform.x) / (MAP_W * mapTransform.scale);
     var y = (clientY - rect.top - mapTransform.y) / (MAP_H * mapTransform.scale);
     return { x: clamp(x, 0, 1), y: clamp(y, 0, 1) };
-  }
-
-  function saveMapPositions() {
-    dirty = true;
-    saveGame();
-  }
-
-  function selectMapTarget(target) {
-    mapSelected = target;
-    if (!mapWrapEl) return;
-    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-camp]"), function (el) {
-      if (el.classList) el.classList.toggle("selected", target === "camp:" + el.getAttribute("data-map-camp"));
-    });
-    var villageEl = mapWrapEl.querySelectorAll("[data-map-village]")[0];
-    if (villageEl && villageEl.classList) villageEl.classList.toggle("selected", target === "village");
-    var hint = document.getElementById("map-hint");
-    if (hint) {
-      hint.textContent = target
-        ? "Ahora toca el punto del mapa donde quieres moverlo."
-        : "Toca un marcador y luego el punto del mapa donde quieres colocarlo.";
-    }
   }
 
   function initMap() {
@@ -2006,13 +1937,25 @@
     }
 
     mapWrapEl.addEventListener("pointerdown", function (event) {
-      if (event.target && event.target.closest && event.target.closest(".marker")) return;
+      if (adminMode && session && session.isAdmin) {
+        var target = event.target;
+        var poly = target && target.closest ? target.closest(".region-poly") : null;
+        var marker = target && target.closest ? target.closest("[data-map-player]") : null;
+        if (poly) {
+          itemDrag = { kind: "region", id: poly.getAttribute("data-region"), x: event.clientX, y: event.clientY };
+          return;
+        }
+        if (marker) {
+          itemDrag = { kind: "village", id: marker.getAttribute("data-map-player"), x: event.clientX, y: event.clientY };
+          return;
+        }
+      }
       pointers[event.pointerId] = { x: event.clientX, y: event.clientY };
       if (pointerList().length === 1) {
         panning = true;
         moved = false;
         start = { x: event.clientX, y: event.clientY, tx: mapTransform.x, ty: mapTransform.y };
-        mapWrapEl.classList.add("dragging");
+        if (mapWrapEl.classList) mapWrapEl.classList.add("dragging");
       } else if (pointerList().length === 2) {
         var pts = pointerList();
         pinchStart = {
@@ -2023,17 +1966,22 @@
     });
 
     mapWrapEl.addEventListener("pointermove", function (event) {
+      if (itemDrag) {
+        if (itemDrag.kind === "region") {
+          var dx = (event.clientX - itemDrag.x) / (MAP_W * mapTransform.scale);
+          var dy = (event.clientY - itemDrag.y) / (MAP_H * mapTransform.scale);
+          var poly = mapWrapEl.querySelectorAll('[data-region="' + itemDrag.id + '"]')[0];
+          if (poly) poly.setAttribute("transform", "translate(" + dx * 100 + "," + dy * 100 + ")");
+        }
+        return;
+      }
       if (!pointers[event.pointerId]) return;
       pointers[event.pointerId] = { x: event.clientX, y: event.clientY };
       var pts = pointerList();
       if (pts.length === 2 && pinchStart) {
         var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
         if (pinchStart.dist > 0) {
-          var target = clamp(
-            pinchStart.scale * (dist / pinchStart.dist),
-            mapFitScale,
-            mapFitScale * 5
-          );
+          var target = clamp(pinchStart.scale * (dist / pinchStart.dist), mapFitScale, mapFitScale * 5);
           var rect = mapWrapEl.getBoundingClientRect();
           var cx = (pts[0].x + pts[1].x) / 2 - rect.left;
           var cy = (pts[0].y + pts[1].y) / 2 - rect.top;
@@ -2043,35 +1991,40 @@
         return;
       }
       if (!panning) return;
-      var dx = event.clientX - start.x;
-      var dy = event.clientY - start.y;
-      if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
-      mapTransform.x = start.tx + dx;
-      mapTransform.y = start.ty + dy;
-      clampMapPan();
-      applyMap();
+      var mdx = event.clientX - start.x;
+      var mdy = event.clientY - start.y;
+      if (Math.abs(mdx) + Math.abs(mdy) > 6) moved = true;
+      mapTransform.x = start.tx + mdx;
+      mapTransform.y = start.ty + mdy;
+      clampPanAndDraw();
     });
 
     function endPointer(event) {
+      if (itemDrag) {
+        var drag = itemDrag;
+        itemDrag = null;
+        var dx = (event.clientX - drag.x) / (MAP_W * mapTransform.scale);
+        var dy = (event.clientY - drag.y) / (MAP_H * mapTransform.scale);
+        var poly = mapWrapEl.querySelectorAll('[data-region="' + drag.id + '"]')[0];
+        if (poly) poly.removeAttribute("transform");
+        if (Math.abs(dx) + Math.abs(dy) > 0.002) {
+          if (drag.kind === "region") {
+            adminAction("admin_move_region", { rid: Number(drag.id), dx: dx, dy: dy });
+          } else {
+            var point = mapFraction(event.clientX, event.clientY);
+            if (point) {
+              adminAction("admin_move_village", { target_id: drag.id, nx: point.x, ny: point.y });
+            }
+          }
+        }
+        return;
+      }
       if (!pointers[event.pointerId]) return;
       delete pointers[event.pointerId];
       if (pointerList().length < 2) pinchStart = null;
       if (pointerList().length === 0) {
         panning = false;
-        mapWrapEl.classList.remove("dragging");
-        if (mapEdit && !moved && mapSelected) {
-          var point = mapImagePoint(event.clientX, event.clientY);
-          if (point) {
-            if (mapSelected === "village") state.map.village = point;
-            else if (mapSelected.indexOf("camp:") === 0) {
-              state.map.camps[mapSelected.slice(5)] = point;
-            }
-            saveMapPositions();
-            renderGame();
-            var hint = document.getElementById("map-hint");
-            if (hint) hint.textContent = "Marcador movido. Elige otro o pulsa Terminar ajuste.";
-          }
-        }
+        if (mapWrapEl.classList) mapWrapEl.classList.remove("dragging");
       }
     }
 
@@ -2084,27 +2037,15 @@
       function (event) {
         event.preventDefault();
         var rect = mapWrapEl.getBoundingClientRect();
-        var factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
-        zoomMap(factor, event.clientX - rect.left, event.clientY - rect.top);
+        zoomMap(event.deltaY < 0 ? 1.15 : 1 / 1.15, event.clientX - rect.left, event.clientY - rect.top);
       },
       { passive: false }
     );
 
-    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-camp]"), function (marker) {
-      marker.addEventListener("click", function (event) {
-        if (event.stopPropagation) event.stopPropagation();
-        var id = marker.getAttribute("data-map-camp");
-        if (mapEdit) {
-          selectMapTarget("camp:" + id);
-          return;
-        }
-        raid(Number(id));
-      });
-    });
-
     Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-player]"), function (marker) {
       marker.addEventListener("click", function (event) {
         if (event.stopPropagation) event.stopPropagation();
+        if (adminMode) return;
         var id = marker.getAttribute("data-map-player");
         pvpResult = null;
         world.players.forEach(function (player) {
@@ -2115,19 +2056,13 @@
     });
 
     var attackBtn = document.getElementById("pvp-attack-btn");
-    if (attackBtn) {
-      attackBtn.addEventListener("click", function () {
-        if (pvpTarget) pvpAttack(pvpTarget.id);
-      });
-    }
+    if (attackBtn) attackBtn.addEventListener("click", function () { if (pvpTarget) pvpAttack(pvpTarget.id); });
     var cancelBtn = document.getElementById("pvp-cancel-btn");
-    if (cancelBtn) {
-      cancelBtn.addEventListener("click", function () {
-        pvpTarget = null;
-        pvpResult = null;
-        renderGame();
-      });
-    }
+    if (cancelBtn) cancelBtn.addEventListener("click", function () {
+      pvpTarget = null;
+      pvpResult = null;
+      renderGame();
+    });
 
     Array.prototype.forEach.call(app.querySelectorAll("[data-map-zoom]"), function (button) {
       button.addEventListener("click", function () {
@@ -2135,18 +2070,26 @@
       });
     });
     Array.prototype.forEach.call(app.querySelectorAll("[data-map-center]"), function (button) {
+      button.addEventListener("click", function () { fitMap(); });
+    });
+
+    var adminBtn = document.getElementById("admin-mode-btn");
+    if (adminBtn) adminBtn.addEventListener("click", function () {
+      adminMode = !adminMode;
+      renderGame();
+    });
+    var imageBtn = document.getElementById("admin-image-btn");
+    if (imageBtn) imageBtn.addEventListener("click", function () {
+      var url = window.prompt("URL de la nueva imagen del mapa (vacío = imagen por defecto)", mapImageUrl());
+      if (url === null) return;
+      adminAction("admin_set_map_image", { url: url });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-lock-region]"), function (button) {
       button.addEventListener("click", function () {
-        fitMap();
+        var lock = button.getAttribute("data-lock") === "1";
+        adminAction("admin_set_region_locked", { rid: Number(button.getAttribute("data-lock-region")), is_locked: lock });
       });
     });
-    var editBtn = document.getElementById("map-edit-btn");
-    if (editBtn) {
-      editBtn.addEventListener("click", function () {
-        mapEdit = !mapEdit;
-        mapSelected = null;
-        renderGame();
-      });
-    }
   }
 
   function raceView() {
@@ -2180,13 +2123,11 @@
       ["aldea", "Aldea"],
       ["cuartel", "Cuartel"],
       ["mapa", "Mapa"],
-      ["campamento", "Incursiones"],
       ["raza", "Raza"],
     ];
     var center;
     if (view === "cuartel") center = troopsView();
     else if (view === "mapa") center = mapView();
-    else if (view === "campamento") center = campsView();
     else if (view === "raza") center = raceView();
     else center = buildingsView();
 
@@ -2273,11 +2214,6 @@
     Array.prototype.forEach.call(app.querySelectorAll("[data-train]"), function (button) {
       button.addEventListener("click", function () {
         trainTroop(button.getAttribute("data-train"), Number(button.getAttribute("data-amount")));
-      });
-    });
-    Array.prototype.forEach.call(app.querySelectorAll("[data-raid]"), function (button) {
-      button.addEventListener("click", function () {
-        raid(Number(button.getAttribute("data-raid")));
       });
     });
     initMap();

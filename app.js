@@ -1809,47 +1809,6 @@
     return { x: x / pts.length, y: y / pts.length };
   }
 
-  function roadsSvg(points) {
-    if (!points || points.length < 2) return "";
-    var inTree = [0];
-    var used = { 0: true };
-    var edges = [];
-
-    while (inTree.length < points.length) {
-      var best = null;
-      for (var i = 0; i < inTree.length; i++) {
-        var a = points[inTree[i]];
-        for (var j = 0; j < points.length; j++) {
-          if (used[j]) continue;
-          var b = points[j];
-          var dx = (Number(a.x) - Number(b.x)) * MAP_W;
-          var dy = (Number(a.y) - Number(b.y)) * MAP_H;
-          var dist = dx * dx + dy * dy;
-          if (!best || dist < best.dist) best = { from: inTree[i], to: j, dist: dist };
-        }
-      }
-      if (!best) break;
-      edges.push(best);
-      used[best.to] = true;
-      inTree.push(best.to);
-    }
-
-    return (
-      '<svg class="road-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
-        edges
-          .map(function (edge) {
-            var a = points[edge.from];
-            var b = points[edge.to];
-            return (
-              '<line class="road" x1="' + (a.x * 100).toFixed(3) + '" y1="' + (a.y * 100).toFixed(3) +
-                '" x2="' + (b.x * 100).toFixed(3) + '" y2="' + (b.y * 100).toFixed(3) + '"></line>'
-            );
-          })
-          .join("") +
-      "</svg>"
-    );
-  }
-
   function roadXY(pt) {
     if (Array.isArray(pt)) return { x: Number(pt[0]), y: Number(pt[1]) };
     return { x: Number(pt.x), y: Number(pt.y) };
@@ -2410,7 +2369,7 @@
             "</div>"
           );
         }).join("")
-      : '<div class="admin-hint">Esta región usa los caminos automáticos. Crea uno para dibujar tu propio trazado.</div>';
+      : '<div class="admin-hint">Aún no hay caminos en esta región. Crea uno desde una aldea.</div>';
     var tools = "";
     if (editing) {
       var link = !roadDraft.id ? roadConnection(roadDraft) : null;
@@ -2515,26 +2474,16 @@
         return String(npc.region) === String(open.id) &&
           typeof npc.x === "number" && typeof npc.y === "number";
       });
-      var points = players.map(function (player) {
-        return { x: Number(player.x), y: Number(player.y) };
-      });
-      npcs.forEach(function (npc) {
-        points.push({ x: Number(npc.x), y: Number(npc.y) });
-      });
       var castle = castleOf(open.id);
-      if (castle && typeof castle.x === "number" && typeof castle.y === "number") {
-        points.push({ x: Number(castle.x), y: Number(castle.y) });
-      }
       var mineHere =
         !!meMarker &&
         (String(session.region) === String(open.id) || pointInRegion(open, mePos));
-      if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y) });
       regionRoads = roadsOfRegion(open.id);
       var draftHere =
         roadMode && roadDraft && String(roadDraft.region) === String(open.id) ? roadDraft : null;
       var roadsLayer = regionRoads.length || draftHere
         ? customRoadsSvg(regionRoads, draftHere)
-        : roadsSvg(points);
+        : "";
 
       layer = roadsLayer + (castle
         ? '<button class="marker castle" data-map-castle="' + escapeHtml(castle.id) + '" ' +

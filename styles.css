@@ -1028,3 +1028,150 @@ input {
 .map-legend .dot.mid { background: #d8bd52; }
 .map-legend .dot.hard { background: #c4544a; }
 .map-legend .grow { flex: 1; }
+
+/* ---------------- jugadores en el mapa ---------------- */
+
+.marker.player .pin {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  transform: none;
+  border: 2px solid #0b0a10;
+}
+
+.marker.player.horda .pin { background: #c4544a; }
+.marker.player.alianza .pin { background: #4a7ec4; }
+.marker.player.enanos .pin { background: #c4a24a; }
+
+.marker.player .mlabel {
+  font-size: 0.62rem;
+  max-width: 7.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.marker.player.offline {
+  opacity: 0.55;
+}
+
+.marker.player.shielded .pin {
+  box-shadow: 0 0 0 3px rgba(122, 167, 224, 0.35);
+}
+
+.marker.me .pin {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  transform: none;
+  background: #7aa7e0;
+  border: 2px solid #0b0a10;
+  box-shadow: 0 0 0 4px rgba(122, 167, 224, 0.25);
+}
+
+.marker.me .mlabel {
+  color: #bcd6f5;
+  border-color: #3c5d86;
+}
+
+.pvp-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin: 0 1rem 0.7rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid #3c5d86;
+  border-radius: 10px;
+  background: rgba(30, 44, 66, 0.55);
+}
+
+.pvp-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.82rem;
+}
+
+.pvp-info b {
+  color: #dbe8f8;
+}
+
+.pvp-info span {
+  color: var(--text-sub);
+}
+
+.pvp-warn {
+  color: #e0b36a;
+}
+
+.pvp-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.pvp-actions .btn,
+.pvp-actions .btn-primary {
+  padding: 0.4rem 0.8rem;
+  font-size: 0.8rem;
+}
+
+.pvp-result {
+  margin: 0 1rem 0.7rem;
+  padding: 0.55rem 0.8rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.pvp-result.win {
+  border-color: #3f7b56;
+  color: #9fd8b2;
+}
+
+.pvp-result.lose {
+  border-color: #7b3f3f;
+  color: #e0a8a8;
+}
+
+.world-feed {
+  padding: 0 1rem 1rem;
+}
+
+.world-feed h3 {
+  font-family: "Cinzel", serif;
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-sub);
+  margin-bottom: 0.4rem;
+}
+
+.feed-row {
+  font-size: 0.78rem;
+  color: var(--text-sub);
+  padding: 0.3rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.feed-row.win {
+  color: #b6d8c3;
+}
+
+.feed-row.lose {
+  color: #d8b6b6;
+}
+
+.map-legend .dot.player {
+  background: #7aa7e0;
+}
+
+.worldmap-stage:not(.labels) .marker.player .mlabel {
+  display: none;
+}
+
+.worldmap-stage:not(.labels) .marker.player .pin {
+  width: 10px;
+  height: 10px;
+}

@@ -497,7 +497,7 @@
 
   function cloudLoadProfile(token, userId) {
     return api(
-      "/rest/v1/profiles?id=eq." + encodeURIComponent(userId) + "&select=race,state,username",
+      "/rest/v1/profiles?id=eq." + encodeURIComponent(userId) + "&select=race,state,username,x,y",
       { token: token }
     );
   }
@@ -528,19 +528,19 @@
   }
 
   function flushCloudSave() {
-    if (!session || session.mode !== "cloud" || !state || !session.token) return;
+    if (!session || session.mode !== "cloud" || !state || !session.token) return Promise.resolve(false);
     var token = session.token;
     var userId = session.userId;
     var username = session.username || account;
-    cloudWriteProfile(token, userId, username, state.race, state).then(function (result) {
+    return cloudWriteProfile(token, userId, username, state.race, state).then(function (result) {
       if (result.ok) {
         setCloudState("ready");
         dirty = false;
-        return;
+        return true;
       }
       if (result.status === 401) {
         return cloudRefresh(session.refreshToken).then(function (refresh) {
-          if (!refresh.ok || !refresh.data || !refresh.data.access_token) return;
+          if (!refresh.ok || !refresh.data || !refresh.data.access_token) return false;
           session.token = refresh.data.access_token;
           session.refreshToken = refresh.data.refresh_token || session.refreshToken;
           writeJSON(SESSION_KEY, session);
@@ -548,8 +548,10 @@
         });
       }
       if (result.status === 404) setCloudState("missing");
+      return false;
     }).catch(function () {
       setCloudState("offline");
+      return false;
     });
   }
 
@@ -587,6 +589,8 @@
       state = migrateState(row.state && row.state.race ? row.state : newState(row.race));
       state.race = row.race || state.race;
       session.username = row.username || session.username;
+      if (row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
+      writeJSON(SESSION_KEY, session);
       var offline = applyOffline(state);
       if (offline.minutes >= 1) {
         addLog(
@@ -847,6 +851,8 @@
     authInfo = "";
     if (tickHandle) clearInterval(tickHandle);
     if (saveHandle) clearInterval(saveHandle);
+    stopWorldSync();
+    mapFitted = false;
     renderAuth();
   }
 
@@ -926,7 +932,12 @@
               state = freshState;
               mirrorLocal(cloudPending.email, "", raceId, state);
               session.username = session.username || cloudPending.email.split("@")[0];
-              enterGame();
+              return cloudLoadProfile(session.token, session.userId).then(function (profile) {
+                var row = profile.ok && Array.isArray(profile.data) ? profile.data[0] : null;
+                if (row && row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
+                writeJSON(SESSION_KEY, session);
+                enterGame();
+              });
             })
             .catch(function () {
               pendingRace = cloudPending;
@@ -963,11 +974,15 @@
 
   function enterGame() {
     view = "aldea";
+    mapFitted = false;
+    pvpTarget = null;
+    pvpResult = null;
     renderGame();
     if (tickHandle) clearInterval(tickHandle);
     if (saveHandle) clearInterval(saveHandle);
     tickHandle = setInterval(tick, 1000);
     saveHandle = setInterval(saveGame, SAVE_EVERY_MS);
+    startWorldSync();
   }
 
   function buildTimeMs(key, level) {
@@ -1519,6 +1534,127 @@
     );
   }
 
+  /* ---------------- mundo compartido ---------------- */
+
+  var world = { players: [], events: [], online: 0, at: 0, error: "" };
+  var worldTimer = null;
+  var pvpTarget = null;
+  var pvpResult = null;
+  var pvpBusy = false;
+  var mapFitted = false;
+
+  function isCloud() {
+    return !!(session && session.mode === "cloud" && session.token);
+  }
+
+  function syncWorld() {
+    if (!isCloud()) return Promise.resolve();
+    return api("/rest/v1/rpc/world_snapshot", { method: "POST", token: session.token, body: {} })
+      .then(function (result) {
+        if (!result.ok) {
+          world.error =
+            result.status === 404
+              ? "El mundo compartido no está configurado. Ejecuta supabase/schema.sql."
+              : "No se pudo cargar el mundo (" + result.status + ").";
+          if (result.status === 404) setCloudState("missing");
+          return;
+        }
+        var data = result.data || {};
+        world.players = Array.isArray(data.players) ? data.players : [];
+        world.events = Array.isArray(data.events) ? data.events : [];
+        world.online = Number(data.online || 0);
+        world.at = now();
+        world.error = "";
+        if (view === "mapa" && !mapEdit) renderGame();
+      })
+      .catch(function () {
+        world.error = "Sin conexión con el mundo compartido.";
+      });
+  }
+
+  function startWorldSync() {
+    stopWorldSync();
+    if (!isCloud()) return;
+    syncWorld();
+    worldTimer = setInterval(function () {
+      if (!document.hidden) syncWorld();
+    }, 10000);
+  }
+
+  function stopWorldSync() {
+    if (worldTimer) clearInterval(worldTimer);
+    worldTimer = null;
+    world = { players: [], events: [], online: 0, at: 0, error: "" };
+    pvpTarget = null;
+    pvpResult = null;
+  }
+
+  function refreshOwnProfile() {
+    if (!isCloud()) return Promise.resolve();
+    return api(
+      "/rest/v1/profiles?id=eq." + encodeURIComponent(session.userId) + "&select=race,state,username,x,y",
+      { token: session.token }
+    ).then(function (result) {
+      if (!result.ok || !Array.isArray(result.data) || !result.data[0]) return;
+      var row = result.data[0];
+      state = migrateState(row.state);
+      state.race = row.race || state.race;
+      session.username = row.username || session.username;
+      if (row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
+      writeJSON(SESSION_KEY, session);
+      refreshNumbers();
+      updateTimers();
+    });
+  }
+
+  function pvpAttack(targetId) {
+    if (!isCloud() || pvpBusy) return;
+    var target = null;
+    world.players.forEach(function (player) {
+      if (String(player.id) === String(targetId)) target = player;
+    });
+    if (!target) return;
+    pvpBusy = true;
+    pvpResult = null;
+    renderGame();
+    flushCloudSave().then(function () {
+      return api("/rest/v1/rpc/attack_rival", {
+        method: "POST",
+        token: session.token,
+        body: { target_id: target.id },
+      });
+    }).then(function (result) {
+      pvpBusy = false;
+      if (!result.ok) {
+        var message = cloudErrorMessage(result);
+        if (message.indexOf("shielded") !== -1) message = "Ese jugador sigue protegido por su escudo inicial.";
+        else if (message.indexOf("cooldown") !== -1) message = "Ya atacaste a ese jugador hace menos de 5 minutos.";
+        else if (message.indexOf("no troops") !== -1) message = "No tienes tropas para atacar.";
+        pvpResult = { ok: false, text: message };
+        renderGame();
+        return;
+      }
+      var data = result.data || {};
+      pvpResult = {
+        ok: true,
+        win: !!data.win,
+        text:
+          (data.win ? "Victoria" : "Derrota") +
+          " contra " + (data.target || "el rival") +
+          (data.win ? " · botín " + num(data.loot || 0) : "") +
+          " · bajas " + num(data.attacker_losses || 0) + "/" + num(data.defender_losses || 0),
+      };
+      addLog(String(data.text || "Batalla contra " + (data.target || "un rival")), data.win ? "good" : "bad");
+      return refreshOwnProfile().then(syncWorld).then(function () {
+        renderGame();
+      });
+    }).catch(function () {
+      pvpBusy = false;
+      pvpResult = { ok: false, text: "No se pudo completar el ataque." };
+      renderGame();
+    });
+  }
+
   /* ---------------- world map ---------------- */
 
   var MAP_IMAGE = "./assets/map.jpg";
@@ -1570,17 +1706,82 @@
         );
       })
       .join("");
-    var village = villagePosition();
+
+    var players = [];
+    if (isCloud()) {
+      players = world.players.filter(function (player) {
+        return String(player.id) !== String(session.userId);
+      });
+    }
+    var playerMarkers = players
+      .map(function (player) {
+        if (typeof player.x !== "number" || typeof player.y !== "number") return "";
+        var tag = (player.online ? "" : " offline") + (player.shield ? " shielded" : "");
+        return (
+          '<button class="marker player ' + player.race + tag + '" data-map-player="' + escapeHtml(player.id) + '" ' +
+            'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) + '" ' +
+            'style="left:' + (player.x * 100).toFixed(2) + "%;top:" + (player.y * 100).toFixed(2) + '%">' +
+            '<span class="mlabel">' + (player.shield ? "⛨ " : "") + escapeHtml(player.name) + "</span>" +
+            '<span class="pin"></span>' +
+          "</button>"
+        );
+      })
+      .join("");
+
+    var mePos = session && session.village ? session.village : villagePosition();
     var villageMarker =
-      '<div class="marker village" data-map-village="1" style="left:' +
-        (village.x * 100).toFixed(2) + "%;top:" + (village.y * 100).toFixed(2) + '%">' +
+      '<div class="marker me" data-map-village="1" style="left:' +
+        (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
         '<span class="mlabel">Tu aldea</span><span class="pin"></span>' +
       "</div>";
+
+    var statusText = isCloud()
+      ? (world.error
+          ? world.error
+          : world.at
+            ? world.online + " en línea · " + world.players.length + " aldeas en el mundo"
+            : "Conectando con el mundo…")
+      : "Modo local: solo tú en este mapa.";
+
+    var target = pvpTarget;
+    var targetCard = "";
+    if (target) {
+      targetCard =
+        '<div class="pvp-card">' +
+          '<div class="pvp-info"><b>' + escapeHtml(target.name || "Rival") + "</b>" +
+            '<span>' + (RACES[target.race] ? RACES[target.race].name : target.race) +
+            " · Poder " + num(target.power) + " · Victorias " + num(target.wins || 0) + "</span>" +
+            (target.shield ? '<span class="pvp-warn">Escudo activo: no se puede atacar.</span>' : "") +
+          "</div>" +
+          '<div class="pvp-actions">' +
+            '<button class="btn-primary" id="pvp-attack-btn"' +
+              (target.shield || pvpBusy ? " disabled" : "") + ">" +
+              (pvpBusy ? "Atacando…" : "Atacar") +
+            "</button>" +
+            '<button class="btn" id="pvp-cancel-btn">Cancelar</button>' +
+          "</div>" +
+        "</div>";
+    }
+    var resultCard = pvpResult
+      ? '<div class="pvp-result ' + (pvpResult.ok && pvpResult.win ? "win" : "lose") + '">' +
+          escapeHtml(pvpResult.text) + "</div>"
+      : "";
+
+    var feed = world.events.length
+      ? '<div class="world-feed"><h3>Actividad del mundo</h3>' +
+        world.events
+          .map(function (event) {
+            return '<div class="feed-row ' + (event.winner === "attacker" ? "win" : "lose") + '">' +
+              escapeHtml(event.text) + "</div>";
+          })
+          .join("") +
+        "</div>"
+      : "";
 
     return (
       '<div class="panel map-panel">' +
         '<div class="panel-head"><h2>Mapa del mundo</h2>' +
-          '<span class="hint">Arrastra para explorar · rueda o pellizco para zoom</span></div>' +
+          '<span class="hint">' + escapeHtml(statusText) + "</span></div>" +
         '<div class="map-tools">' +
           '<button class="btn" data-map-zoom="in" aria-label="Acercar">+</button>' +
           '<button class="btn" data-map-zoom="out" aria-label="Alejar">−</button>' +
@@ -1590,23 +1791,28 @@
           "</button>" +
           '<span class="map-hint" id="map-hint">' +
             (mapEdit
-              ? "Toca un marcador y luego el punto del mapa donde quieres colocarlo."
-              : "Toca un campamento para atacarlo.") +
+              ? "Toca un campamento y luego el punto del mapa para recolocarlo."
+              : "Toca una aldea enemiga para atacarla.") +
           "</span>" +
         "</div>" +
+        targetCard +
+        resultCard +
         '<div class="worldmap' + (mapEdit ? " editing" : "") + '" id="worldmap">' +
           '<div class="worldmap-stage" id="worldmap-stage">' +
             '<img src="' + MAP_IMAGE + '" alt="Mapa del mundo" draggable="false" />' +
-            villageMarker +
             markers +
+            playerMarkers +
+            villageMarker +
           "</div>" +
         "</div>" +
         '<div class="map-legend">' +
-          '<span><i class="dot easy"></i>Fácil</span>' +
+          '<span><i class="dot easy"></i>Campamento fácil</span>' +
           '<span><i class="dot mid"></i>Medio</span>' +
           '<span><i class="dot hard"></i>Difícil</span>' +
-          '<span class="grow"></span><span class="hint">Poder: ' + num(power) + "</span>" +
+          '<span><i class="dot player"></i>Jugador</span>' +
+          '<span class="grow"></span><span class="hint">Tu poder: ' + num(power) + "</span>" +
         "</div>" +
+        feed +
       "</div>"
     );
   }
@@ -1628,6 +1834,9 @@
     mapStageEl.style.transform =
       "translate(" + mapTransform.x + "px," + mapTransform.y + "px) scale(" + mapTransform.scale + ")";
     mapStageEl.style.setProperty("--inv", String(1 / mapTransform.scale));
+    if (mapStageEl.classList) {
+      mapStageEl.classList.toggle("labels", mapTransform.scale > mapFitScale * 1.6);
+    }
   }
 
   function fitMap() {
@@ -1701,7 +1910,12 @@
     var start = { x: 0, y: 0, tx: 0, ty: 0 };
     var pinchStart = null;
 
-    fitMap();
+    if (!mapFitted) {
+      fitMap();
+      mapFitted = true;
+    } else {
+      applyMap();
+    }
 
     function pointerList() {
       return Object.keys(pointers).map(function (id) {
@@ -1806,12 +2020,32 @@
       });
     });
 
-    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-village]"), function (marker) {
+    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-player]"), function (marker) {
       marker.addEventListener("click", function (event) {
         if (event.stopPropagation) event.stopPropagation();
-        if (mapEdit) selectMapTarget("village");
+        var id = marker.getAttribute("data-map-player");
+        pvpResult = null;
+        world.players.forEach(function (player) {
+          if (String(player.id) === String(id)) pvpTarget = player;
+        });
+        renderGame();
       });
     });
+
+    var attackBtn = document.getElementById("pvp-attack-btn");
+    if (attackBtn) {
+      attackBtn.addEventListener("click", function () {
+        if (pvpTarget) pvpAttack(pvpTarget.id);
+      });
+    }
+    var cancelBtn = document.getElementById("pvp-cancel-btn");
+    if (cancelBtn) {
+      cancelBtn.addEventListener("click", function () {
+        pvpTarget = null;
+        pvpResult = null;
+        renderGame();
+      });
+    }
 
     Array.prototype.forEach.call(app.querySelectorAll("[data-map-zoom]"), function (button) {
       button.addEventListener("click", function () {
@@ -1939,6 +2173,7 @@
     Array.prototype.forEach.call(app.querySelectorAll("[data-view]"), function (button) {
       button.addEventListener("click", function () {
         view = button.getAttribute("data-view");
+        if (view === "mapa" && isCloud()) syncWorld();
         renderGame();
       });
     });
@@ -2027,6 +2262,8 @@
           state = migrateState(row.state && row.state.race ? row.state : newState(row.race));
           state.race = row.race || state.race;
           session.username = row.username || session.username;
+          if (row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
+          writeJSON(SESSION_KEY, session);
           var offline = applyOffline(state);
           if (offline.minutes >= 1) {
             addLog(

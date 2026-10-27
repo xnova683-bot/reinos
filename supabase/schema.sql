@@ -3,7 +3,8 @@
 -- Es idempotente: se puede volver a ejecutar sin perder partidas.
 -- Registro solo con teléfono (correo interno: <telefono>@reinos.local).
 -- Cuenta de administración: usuario "admin", contraseña "Reinos#2026".
--- IMPORTANTE: desactiva "Confirm email" en Supabase > Authentication > Providers > Email.
+-- Confirmación automática: el SQL crea un trigger en auth.users que marca
+-- el correo interno como confirmado al registrarse, sin tocar el panel.
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
@@ -718,6 +719,35 @@ update public.profiles
 -- ============================================================
 -- Cuenta de administración (usuario: admin / contraseña: Reinos#2026)
 -- ============================================================
+
+-- ============================================================
+-- Confirmación automática de cuentas (sin depender del panel)
+-- ============================================================
+
+create or replace function public.auto_confirm_signup()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth
+as $fn$
+begin
+  if new.email_confirmed_at is null then
+    new.email_confirmed_at := now();
+  end if;
+  return new;
+end;
+$fn$;
+
+drop trigger if exists auth_auto_confirm on auth.users;
+create trigger auth_auto_confirm
+  before insert on auth.users
+  for each row execute function public.auto_confirm_signup();
+
+update auth.users
+  set email_confirmed_at = now(),
+      updated_at = now()
+  where email_confirmed_at is null
+    and email like '%@reinos.local';
 
 create extension if not exists pgcrypto with schema extensions;
 

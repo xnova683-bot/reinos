@@ -103,14 +103,39 @@ security definer
 set search_path = public
 as $fn$
 declare
+  n integer;
+  region integer;
+  base_region integer;
+  total_regions integer;
   slot integer;
+  col integer;
+  row integer;
   jitter integer;
+  rx numeric;
+  ry numeric;
 begin
   if new.x is null or new.y is null then
-    select count(*) % 500 into slot from public.profiles;
+    -- 10 reinos en rejilla 5x2; cada reino admite 50 aldeas (5x10)
+    if new.race = 'horda' then
+      base_region := 0; total_regions := 4;
+    elsif new.race = 'alianza' then
+      base_region := 4; total_regions := 3;
+    else
+      base_region := 7; total_regions := 3;
+    end if;
+
+    select count(*) into n from public.profiles where race = new.race;
+    region := base_region + ((n / 50) % total_regions);
+    slot := n % 50;
+
     jitter := ('x' || substr(md5(new.id::text), 1, 8))::bit(32)::bigint % 1000;
-    new.x := 0.1 + (slot % 25) * 0.0336 + (jitter % 7) * 0.0016;
-    new.y := 0.16 + ((slot / 25) % 20) * 0.0356 + ((jitter / 7) % 7) * 0.0016;
+    col := region % 5;
+    row := region / 5;
+    rx := 0.04 + col * 0.188;
+    ry := 0.14 + row * 0.375;
+
+    new.x := rx + 0.01 + (slot % 5) * 0.0296 + (jitter % 7) * 0.0012;
+    new.y := ry + 0.012 + (slot / 5) * 0.0321 + ((jitter / 7) % 7) * 0.0012;
   end if;
   new.last_seen := now();
   if new.shield_until is null then

@@ -1660,6 +1660,51 @@
   var MAP_IMAGE = "./assets/map.jpg";
   var MAP_W = 3182;
   var MAP_H = 2249;
+
+  var REGION_COLS = 5;
+  var REGION_ROWS = 2;
+  var REGION_GAP = 0.02;
+  var REGION_W = 0.168;
+  var REGION_H = 0.345;
+  var REGION_X0 = 0.04;
+  var REGION_Y0 = 0.14;
+
+  var REGION_NAMES = [
+    ["Cumbres de Khar", "horda"],
+    ["Estepas Rojas", "horda"],
+    ["Bosque de Espinas", "horda"],
+    ["Ceniza Negra", "horda"],
+    ["Valle Dorado", "alianza"],
+    ["Costa de Plata", "alianza"],
+    ["Llanura del Alba", "alianza"],
+    ["Forja Profunda", "enanos"],
+    ["Picos de Hierro", "enanos"],
+    ["Cavernas de Ámbar", "enanos"],
+  ];
+
+  var REGIONS = REGION_NAMES.map(function (entry, index) {
+    var col = index % REGION_COLS;
+    var row = Math.floor(index / REGION_COLS);
+    var x0 = REGION_X0 + col * (REGION_W + REGION_GAP);
+    var y0 = REGION_Y0 + row * (REGION_H + REGION_GAP);
+    return {
+      index: index,
+      name: entry[0],
+      race: entry[1],
+      x0: x0,
+      x1: x0 + REGION_W,
+      y0: y0,
+      y1: y0 + REGION_H,
+    };
+  });
+
+  function regionAt(x, y) {
+    for (var i = 0; i < REGIONS.length; i++) {
+      var r = REGIONS[i];
+      if (x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1) return r;
+    }
+    return null;
+  }
   var MAP_DEFAULTS = [
     { x: 0.28, y: 0.3 },
     { x: 0.66, y: 0.24 },
@@ -1720,7 +1765,8 @@
         var tag = (player.online ? "" : " offline") + (player.shield ? " shielded" : "");
         return (
           '<button class="marker player ' + player.race + tag + '" data-map-player="' + escapeHtml(player.id) + '" ' +
-            'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) + '" ' +
+            'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) +
+              (regionAt(Number(player.x), Number(player.y)) ? " · " + regionAt(Number(player.x), Number(player.y)).name : "") + '" ' +
             'data-mx="' + player.x + '" data-my="' + player.y + '" ' +
             'style="left:' + (player.x * 100).toFixed(2) + "%;top:" + (player.y * 100).toFixed(2) + '%">' +
             '<span class="mlabel">' + (player.shield ? "⛨ " : "") + escapeHtml(player.name) + "</span>" +
@@ -1736,6 +1782,17 @@
         (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
         '<span class="mlabel">Tu aldea</span><span class="pin"></span>' +
       "</div>";
+
+    var regionOverlays = REGIONS.map(function (region) {
+      return (
+        '<div class="region ' + region.id + '" style="left:' + (region.x0 * 100).toFixed(2) +
+          "%;top:" + (region.y0 * 100).toFixed(2) +
+          "%;width:" + ((region.x1 - region.x0) * 100).toFixed(2) +
+          "%;height:" + ((region.y1 - region.y0) * 100).toFixed(2) + '%">' +
+          '<span class="region-label">' + region.name + "</span>" +
+        "</div>"
+      );
+    }).join("");
 
     var statusText = isCloud()
       ? (world.error
@@ -1802,6 +1859,7 @@
         '<div class="worldmap' + (mapEdit ? " editing" : "") + '" id="worldmap">' +
           '<div class="worldmap-stage" id="worldmap-stage" style="width:' + MAP_W + "px;height:" + MAP_H + 'px">' +
             '<img src="' + MAP_IMAGE + '" alt="Mapa del mundo" draggable="false" />' +
+            regionOverlays +
             markers +
             playerMarkers +
             villageMarker +
@@ -1837,7 +1895,7 @@
       "translate(" + mapTransform.x + "px," + mapTransform.y + "px) scale(" + mapTransform.scale + ")";
     mapStageEl.style.setProperty("--inv", String(1 / mapTransform.scale));
     if (mapStageEl.classList) {
-      mapStageEl.classList.toggle("labels", mapTransform.scale > mapFitScale * 2.5);
+      mapStageEl.classList.toggle("labels", mapTransform.scale > mapFitScale * 4);
     }
     cullMarkers();
   }

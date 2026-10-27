@@ -519,7 +519,7 @@
     });
   }
 
-  function startCloudSession(auth, email, password, phone) {
+  function startCloudSession(auth, email, password, phone, name) {
     session = {
       mode: "cloud",
       email: email,
@@ -527,7 +527,7 @@
       token: auth.access_token,
       refreshToken: auth.refresh_token,
       userId: auth.user.id,
-      username: phone || (email === "admin@reinos.local" ? "admin" : "") ||
+      username: name || (email === "admin@reinos.local" ? "admin" : "") || phone ||
         (auth.user.user_metadata && auth.user.user_metadata.username) || email.split("@")[0],
       expiresAt: now() + (auth.expires_in || 3600) * 1000,
     };
@@ -622,6 +622,11 @@
             networkNote +
             (authError ? '<div class="msg error">' + escapeHtml(authError) + "</div>" : "") +
             (authInfo ? '<div class="msg ok">' + escapeHtml(authInfo) + "</div>" : "") +
+            (isLogin
+              ? ""
+              : '<label class="field">Nombre de tu señor' +
+                  '<input type="text" name="name" autocomplete="nickname" maxlength="24" placeholder="Ej: Kael" required />' +
+                "</label>") +
             '<label class="field">Teléfono' +
               '<input type="tel" name="phone" inputmode="numeric" autocomplete="tel" placeholder="Solo números" required />' +
             "</label>" +
@@ -655,8 +660,15 @@
       var form = event.currentTarget;
       var typed = String(form.elements.phone.value || "").trim();
       var password = String(form.elements.password.value || "");
+      var name = form.elements.name ? String(form.elements.name.value || "").trim() : "";
       authError = "";
       authInfo = "";
+
+      if (!isLogin && !/^[A-Za-zÀ-ÿ0-9 _.-]{3,24}$/.test(name)) {
+        authError = "Escribe un nombre de 3 a 24 letras.";
+        renderAuth();
+        return;
+      }
 
       var isAdminLogin = isLogin && typed.toLowerCase() === "admin";
       var phone = normalizePhone(typed);
@@ -671,13 +683,13 @@
         return;
       }
 
-      cloudAuthFlow(loginToEmail(typed), password, isLogin, isAdminLogin ? "" : phone);
+      cloudAuthFlow(loginToEmail(typed), password, isLogin, isAdminLogin ? "" : phone, name);
     });
   }
 
   var authBusy = false;
 
-  function cloudAuthFlow(email, password, isLogin, phone) {
+  function cloudAuthFlow(email, password, isLogin, phone, name) {
     authBusy = true;
     renderAuth();
 
@@ -696,7 +708,7 @@
       var data = result.data || {};
       if (data.access_token) {
         done();
-        startCloudSession(data, email, password, phone).catch(function () {
+        startCloudSession(data, email, password, phone, name).catch(function () {
           authBusy = false;
           authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
           renderAuth();
@@ -707,7 +719,7 @@
       cloudSignIn(email, password).then(function (signIn) {
         if (signIn.ok && signIn.data && signIn.data.access_token) {
           done();
-          startCloudSession(signIn.data, email, password, phone).catch(function () {
+          startCloudSession(signIn.data, email, password, phone, name).catch(function () {
             authBusy = false;
             authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
             renderAuth();
@@ -726,7 +738,7 @@
       cloudSignIn(email, password).then(function (result) {
         if (!result.ok) return fail(result);
         done();
-        startCloudSession(result.data, email, password, phone).catch(function () {
+        startCloudSession(result.data, email, password, phone, name).catch(function () {
           authBusy = false;
           authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
           renderAuth();
@@ -1653,19 +1665,21 @@
               .join("") +
           "</div>" +
           (adminMode ? '<div class="admin-hint">Arrastra una región o una aldea para moverla.</div>' : "") +
-          '<div class="admin-phones"><b>Teléfonos registrados (' + world.phones.length + ")</b>" +
+          '<div class="admin-phones"><b>Jugadores registrados (' + world.phones.length + ")</b>" +
             (world.phones.length
               ? world.phones
                   .map(function (row) {
                     return (
-                      '<div class="admin-row"><span>' + escapeHtml(String(row.phone)) +
-                        " · " + escapeHtml(String(row.name)) +
+                      '<div class="admin-row"><span><b class="pname">' + escapeHtml(String(row.name)) +
+                        '</b> · ' + escapeHtml(String(row.phone)) +
                         (row.region != null ? " · R" + escapeHtml(String(row.region)) : "") +
                       "</span><b>" + num(row.wins || 0) + " V</b></div>"
                     );
                   })
                   .join("")
               : '<div class="admin-hint">Aún no hay jugadores registrados.</div>') +
+            '<div class="admin-hint">Las contraseñas no se pueden mostrar: Supabase las guarda cifradas. ' +
+              "Si un jugador la olvida, restablécala desde el panel de Supabase (Authentication → Users).</div>" +
           "</div>" +
         "</div>";
     }

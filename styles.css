@@ -1095,6 +1095,11 @@ input {
   font-weight: 600;
 }
 
+.admin-phones .pname {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .admin-hint {
   margin-top: 0.5rem;
   font-size: 0.74rem;

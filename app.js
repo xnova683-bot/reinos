@@ -272,12 +272,18 @@
     }, 0);
   }
 
+  function resourceSpeed() {
+    var value = Number(state && state.speed);
+    if (!isFinite(value) || value <= 0) value = Number(world && world.speed);
+    return isFinite(value) && value > 0 ? value : 1;
+  }
+
   function productionPerMinute(s, key) {
     var def = BUILDINGS[key];
     if (!def.res) return 0;
     var level = s.buildings[key] || 0;
     var race = RACES[s.race];
-    return def.rate * level * race.prod * prodBonus(s.buildings.ayuntamiento);
+    return def.rate * level * race.prod * prodBonus(s.buildings.ayuntamiento) * resourceSpeed();
   }
 
   function totalProduction(s) {
@@ -1172,7 +1178,8 @@
               " / " + num(limit) + "</b></div>" +
             '<button class="btn" id="gather-btn">Recolectar recursos</button>' +
             '<button class="btn" id="daily-btn">Reclamar bonus diario</button>' +
-            '<div class="mini-note">Recolectar da <b>' + Math.round(30 * race.gather) +
+            '<div class="mini-note">Velocidad de recursos del reino: <b>x' + resourceSpeed().toFixed(2) +
+              "</b>. Recolectar da <b>" + Math.round(30 * race.gather) +
               "</b> de cada recurso cada 30s (bonus de raza x" + race.gather.toFixed(2) +
               "). El bonus diario entrega 1 minuto de producción por recurso cada 20h.</div>" +
           "</div>" +
@@ -1415,6 +1422,8 @@
         world.events = Array.isArray(data.events) ? data.events : [];
         world.phones = Array.isArray(data.phones) ? data.phones : [];
         world.online = Number(data.online || 0);
+        world.speed = Number(data.speed || 1);
+        if (state) state.speed = world.speed;
         world.settings = data.settings || {};
         world.maintenance = data.maintenance || {};
         world.me = data.me || {};
@@ -1650,7 +1659,9 @@
             ? "Contraseña del jugador actualizada."
             : fn === "admin_set_maintenance"
               ? "Portal de mantenimiento actualizado."
-              : "Mapa actualizado.",
+              : fn === "admin_set_resource_speed"
+                ? "Velocidad de recursos actualizada."
+                : "Mapa actualizado.",
       };
         return syncWorld().then(function () {
           renderGame();
@@ -1765,6 +1776,15 @@
               .join("") +
           "</div>" +
           (adminMode ? '<div class="admin-hint">Arrastra un punto de región en el mundo o una aldea dentro de su región.</div>' : "") +
+          '<div class="admin-maint"><b>Velocidad de recursos</b>' +
+            '<div class="admin-maint-state">Actual: x' + resourceSpeed().toFixed(2) + '</div>' +
+            '<div class="admin-speed-row">' +
+              '<input id="speed-input" type="number" min="0.1" max="10" step="0.1" value="' +
+                resourceSpeed().toFixed(1) + '" />' +
+              '<button class="btn" id="speed-save">Guardar velocidad</button>' +
+            '</div>' +
+            '<div class="admin-maint-error" id="speed-error"></div>' +
+          "</div>" +
           '<div class="admin-maint"><b>Portal de mantenimiento</b>' +
             '<div class="admin-maint-state">' +
               (world.maintenance && world.maintenance.active ? "Activo ahora" : "Inactivo") +
@@ -2215,6 +2235,21 @@
         renderGame();
       });
     });
+
+    var speedSave = document.getElementById("speed-save");
+    if (speedSave) {
+      speedSave.addEventListener("click", function () {
+        var input = document.getElementById("speed-input");
+        var errorEl = document.getElementById("speed-error");
+        var speed = input ? Number(input.value) : NaN;
+        if (!isFinite(speed) || speed < 0.1 || speed > 10) {
+          if (errorEl) errorEl.textContent = "La velocidad debe estar entre 0.1 y 10.";
+          return;
+        }
+        if (errorEl) errorEl.textContent = "";
+        adminAction("admin_set_resource_speed", { p_speed: speed });
+      });
+    }
 
     var maintToggle = document.getElementById("maint-toggle");
     if (maintToggle) {

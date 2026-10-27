@@ -46,6 +46,7 @@ create table if not exists public.world_settings (
 alter table public.world_settings add column if not exists maintenance boolean not null default false;
 alter table public.world_settings add column if not exists maintenance_message text not null default '';
 alter table public.world_settings add column if not exists maintenance_version bigint not null default 0;
+alter table public.world_settings add column if not exists resource_speed numeric not null default 1;
 
 insert into public.world_settings (id, map_image)
 values (1, null)
@@ -362,6 +363,9 @@ begin
       ) order by r.id)
       from public.regions r
     ), '[]'::jsonb),
+    'speed', coalesce((
+      select s.resource_speed from public.world_settings s where s.id = 1
+    ), 1),
     'maintenance', coalesce((
       select jsonb_build_object(
         'active', coalesce(s.maintenance, false),
@@ -727,6 +731,23 @@ begin
   return jsonb_build_object('ok', true);
 end;
 $fn$;
+
+create or replace function public.admin_set_resource_speed(p_speed numeric)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v numeric := least(10, greatest(0.1, coalesce(p_speed, 1)));
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+  update public.world_settings set resource_speed = v, updated_at = now() where id = 1;
+  return jsonb_build_object('ok', true, 'speed', v);
+end;
+$fn$;
+
+grant execute on function public.admin_set_resource_speed(numeric) to authenticated;
 
 create or replace function public.maintenance_enter(p_password text)
 returns boolean

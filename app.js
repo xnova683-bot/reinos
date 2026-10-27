@@ -1386,7 +1386,7 @@
   /* ---------------- mundo compartido ---------------- */
 
   var world = {
-    players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0,
+    players: [], regions: [], events: [], phones: [], npcs: [], castles: [], roads: [], online: 0,
     settings: {}, maintenance: {}, me: {}, at: 0, error: "",
   };
   var worldTimer = null;
@@ -1398,6 +1398,11 @@
   var castleTarget = null;
   var pvpResult = null;
   var pvpBusy = false;
+  var roadMode = false;
+  var roadDraft = null;
+  var roadMsg = null;
+  var roadBusy = false;
+  var roadSkipClick = false;
   var mapFitted = false;
   var adminMode = false;
   var itemDrag = null;
@@ -1439,6 +1444,7 @@
         world.phones = Array.isArray(data.phones) ? data.phones : [];
         world.npcs = Array.isArray(data.npcs) ? data.npcs : [];
         world.castles = Array.isArray(data.castles) ? data.castles : [];
+        world.roads = Array.isArray(data.roads) ? data.roads : [];
         world.online = Number(data.online || 0);
         world.speed = Number(data.speed || 1);
         if (state) state.speed = world.speed;
@@ -1545,7 +1551,7 @@
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
-    world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
+    world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], roads: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
     market = { orders: [], error: "", at: 0 };
     marketMsg = null;
     pvpTarget = null;
@@ -1553,6 +1559,9 @@
     castleTarget = null;
     pvpResult = null;
     adminMode = false;
+    roadMode = false;
+    roadDraft = null;
+    roadMsg = null;
     openRegionId = null;
     mapFocusedRegion = null;
     regionHintId = null;
@@ -1841,6 +1850,54 @@
     );
   }
 
+  function roadXY(pt) {
+    if (Array.isArray(pt)) return { x: Number(pt[0]), y: Number(pt[1]) };
+    return { x: Number(pt.x), y: Number(pt.y) };
+  }
+
+  function roadPathD(points) {
+    var pts = points.map(roadXY);
+    if (pts.length < 2) return "";
+    var d = "M" + (pts[0].x * 100).toFixed(3) + " " + (pts[0].y * 100).toFixed(3);
+    if (pts.length === 2) {
+      return d + " L" + (pts[1].x * 100).toFixed(3) + " " + (pts[1].y * 100).toFixed(3);
+    }
+    for (var i = 0; i < pts.length - 1; i++) {
+      var p0 = pts[i - 1] || pts[i];
+      var p1 = pts[i];
+      var p2 = pts[i + 1];
+      var p3 = pts[i + 2] || p2;
+      var c1x = clamp(p1.x + (p2.x - p0.x) / 6, 0, 1);
+      var c1y = clamp(p1.y + (p2.y - p0.y) / 6, 0, 1);
+      var c2x = clamp(p2.x - (p3.x - p1.x) / 6, 0, 1);
+      var c2y = clamp(p2.y - (p3.y - p1.y) / 6, 0, 1);
+      d += " C" + (c1x * 100).toFixed(3) + " " + (c1y * 100).toFixed(3) +
+        " " + (c2x * 100).toFixed(3) + " " + (c2y * 100).toFixed(3) +
+        " " + (p2.x * 100).toFixed(3) + " " + (p2.y * 100).toFixed(3);
+    }
+    return d;
+  }
+
+  function customRoadsSvg(roads, draft) {
+    var paths = roads.map(function (road) {
+      return '<path class="road" data-road-id="' + escapeHtml(road.id) + '" d="' +
+        roadPathD(road.points) + '"></path>';
+    }).join("");
+    var handles = "";
+    if (draft && draft.points) {
+      paths += '<path class="road draft" id="road-draft-path" d="' + roadPathD(draft.points) + '"></path>';
+      handles = draft.points.map(function (pt, index) {
+        var p = roadXY(pt);
+        return '<circle class="road-handle" data-road-handle="' + index + '" cx="' +
+          (p.x * 100).toFixed(3) + '" cy="' + (p.y * 100).toFixed(3) + '" r="1.4"></circle>';
+      }).join("");
+    }
+    return (
+      '<svg class="road-svg' + (draft ? " road-editing" : "") + '" viewBox="0 0 100 100" ' +
+        'preserveAspectRatio="none" aria-hidden="true">' + paths + handles + "</svg>"
+    );
+  }
+
   function mapImageUrl() {
     return (world.settings && world.settings.map) || "./assets/map.jpg";
   }
@@ -1903,6 +1960,139 @@
           renderGame();
         });
       });
+  }
+
+  function roadStartNew() {
+    if (!session || !session.isAdmin || !openRegionId) return;
+    roadMode = true;
+    roadDraft = { id: null, region: openRegionId, points: [] };
+    roadMsg = null;
+    renderGame();
+  }
+
+  function roadStartEdit(id) {
+    if (!session || !session.isAdmin) return;
+    var road = null;
+    world.roads.forEach(function (item) { if (String(item.id) === String(id)) road = item; });
+    if (!road) return;
+    roadMode = true;
+    roadDraft = {
+      id: road.id,
+      region: Number(road.region),
+      points: (road.points || []).map(roadXY),
+    };
+    roadMsg = null;
+    renderGame();
+  }
+
+  function roadCancel() {
+    roadMode = false;
+    roadDraft = null;
+    roadMsg = null;
+    renderGame();
+  }
+
+  function roadUndo() {
+    if (!roadDraft || !roadDraft.points.length) return;
+    roadDraft.points.pop();
+    roadMsg = null;
+    renderGame();
+  }
+
+  function roadSave() {
+    if (roadBusy || !roadDraft || !session || !session.isAdmin) return;
+    if (roadDraft.points.length < 2) {
+      roadMsg = { ok: false, text: "Añade al menos 2 puntos al camino." };
+      renderGame();
+      return;
+    }
+    roadBusy = true;
+    roadMsg = null;
+    renderGame();
+    api("/rest/v1/rpc/admin_save_road", {
+      method: "POST",
+      token: session.token,
+      body: {
+        p_id: roadDraft.id || null,
+        p_region: roadDraft.region,
+        p_points: roadDraft.points.map(function (pt) {
+          return [Number(pt.x), Number(pt.y)];
+        }),
+      },
+    })
+      .then(function (result) {
+        roadBusy = false;
+        if (!result.ok) {
+          roadMsg = { ok: false, text: String(cloudErrorMessage(result)) };
+          renderGame();
+          return;
+        }
+        roadMode = false;
+        roadDraft = null;
+        roadMsg = { ok: true, text: "Camino guardado." };
+        return syncWorld().then(function () {
+          mapFocusedRegion = null;
+          renderGame();
+        });
+      })
+      .catch(function () {
+        roadBusy = false;
+        roadMsg = { ok: false, text: "No se pudo guardar el camino." };
+        renderGame();
+      });
+  }
+
+  function roadDelete(id) {
+    if (roadBusy || !session || !session.isAdmin) return;
+    roadBusy = true;
+    roadMsg = null;
+    renderGame();
+    api("/rest/v1/rpc/admin_delete_road", {
+      method: "POST",
+      token: session.token,
+      body: { p_id: id },
+    })
+      .then(function (result) {
+        roadBusy = false;
+        if (!result.ok) {
+          roadMsg = { ok: false, text: String(cloudErrorMessage(result)) };
+          renderGame();
+          return;
+        }
+        roadMode = false;
+        roadDraft = null;
+        roadMsg = { ok: true, text: "Camino borrado." };
+        return syncWorld().then(function () {
+          mapFocusedRegion = null;
+          renderGame();
+        });
+      })
+      .catch(function () {
+        roadBusy = false;
+        roadMsg = { ok: false, text: "No se pudo borrar el camino." };
+        renderGame();
+      });
+  }
+
+  function bindRoadEvents() {
+    var newBtn = document.getElementById("road-new-btn");
+    if (newBtn) newBtn.addEventListener("click", roadStartNew);
+    var saveBtn = document.getElementById("road-save-btn");
+    if (saveBtn) saveBtn.addEventListener("click", roadSave);
+    var cancelBtn = document.getElementById("road-cancel-btn");
+    if (cancelBtn) cancelBtn.addEventListener("click", roadCancel);
+    var undoBtn = document.getElementById("road-undo-btn");
+    if (undoBtn) undoBtn.addEventListener("click", roadUndo);
+    Array.prototype.forEach.call(app.querySelectorAll("[data-road-edit]"), function (button) {
+      button.addEventListener("click", function () {
+        roadStartEdit(button.getAttribute("data-road-edit"));
+      });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-road-delete]"), function (button) {
+      button.addEventListener("click", function () {
+        roadDelete(button.getAttribute("data-road-delete"));
+      });
+    });
   }
 
   function adminSpeedHtml() {
@@ -2058,6 +2248,46 @@
     );
   }
 
+  function adminRoadsHtml(open, roads) {
+    if (!session || !session.isAdmin || !open) return "";
+    var editing = !!(roadMode && roadDraft && String(roadDraft.region) === String(open.id));
+    var list = roads.length
+      ? roads.map(function (road, index) {
+          return (
+            '<div class="admin-row">' +
+              "<span>Camino " + (index + 1) + " · " + (road.points || []).length + " puntos</span>" +
+              '<button class="btn small" data-road-edit="' + escapeHtml(road.id) + '">Editar</button>' +
+              '<button class="btn small" data-road-delete="' + escapeHtml(road.id) + '">Borrar</button>' +
+            "</div>"
+          );
+        }).join("")
+      : '<div class="admin-hint">Esta región usa los caminos automáticos. Crea uno para dibujar tu propio trazado.</div>';
+    var tools = editing
+      ? '<div class="road-tools">' +
+          '<span class="hint">' +
+            (roadDraft.points.length
+              ? "Toca el mapa para añadir puntos y arrástralos para curvarlo."
+              : "Toca el mapa para colocar el primer punto.") +
+          "</span>" +
+          '<button class="btn small" id="road-undo-btn"' + (roadDraft.points.length ? "" : " disabled") + ">Quitar punto</button>" +
+          '<button class="btn small" id="road-cancel-btn">Cancelar</button>' +
+          '<button class="btn small" id="road-save-btn"' + (roadDraft.points.length < 2 ? " disabled" : "") + ">Guardar</button>" +
+        "</div>"
+      : "";
+    var msg = roadMsg
+      ? '<div class="road-msg ' + (roadMsg.ok ? "ok" : "bad") + '">' + escapeHtml(roadMsg.text) + "</div>"
+      : "";
+    return (
+      '<div class="admin-roads">' +
+        '<div class="admin-roads-head"><b>Caminos de la región</b>' +
+          '<button class="btn small" id="road-new-btn"' + (roadBusy ? " disabled" : "") + ">Nuevo camino</button>" +
+        "</div>" +
+        '<div class="admin-road-list">' + list + "</div>" +
+        tools + msg +
+      "</div>"
+    );
+  }
+
   function mapView() {
     var power = armyPower(state);
     var open = openRegionId ? regionById(openRegionId) : null;
@@ -2085,6 +2315,7 @@
         '<span class="mlabel">' + escapeHtml(myName) + '</span><span class="pin"></span>' +
       "</div>";
 
+    var regionRoads = [];
     var layer = "";
     if (!world.regions.length) {
       layer =
@@ -2136,8 +2367,16 @@
         !!meMarker &&
         (String(session.region) === String(open.id) || pointInRegion(open, mePos));
       if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y) });
+      regionRoads = world.roads.filter(function (road) {
+        return String(road.region) === String(open.id);
+      });
+      var draftHere =
+        roadMode && roadDraft && String(roadDraft.region) === String(open.id) ? roadDraft : null;
+      var roadsLayer = regionRoads.length || draftHere
+        ? customRoadsSvg(regionRoads, draftHere)
+        : roadsSvg(points);
 
-      layer = roadsSvg(points) + (castle
+      layer = roadsLayer + (castle
         ? '<button class="marker castle" data-map-castle="' + escapeHtml(castle.id) + '" ' +
             'data-mx="' + castle.x + '" data-my="' + castle.y + '" ' +
             'title="' + escapeHtml(castle.name) + (castle.owner ? " · Rey " + escapeHtml(castle.owner_name) : " · Sin rey") + '" ' +
@@ -2198,6 +2437,7 @@
               })
               .join("") +
           "</div>" +
+          adminRoadsHtml(open, regionRoads) +
           (adminMode ? '<div class="admin-hint">En el mundo arrastra puntos de región; dentro de una región arrastra sus aldeas, NPCs y castillo por todo el mapa.</div>' : "") +
         "</div>";
     }
@@ -2536,8 +2776,14 @@
 
     mapWrapEl.addEventListener("pointerdown", function (event) {
       if (event.button !== undefined && event.button !== 0) return;
+      var target = event.target;
+      var handle = target && target.closest ? target.closest("[data-road-handle]") : null;
+      if (roadMode && roadDraft && handle && session && session.isAdmin) {
+        beginItemDrag("roadpoint", "road", handle, event);
+        itemDrag.pointIndex = Number(handle.getAttribute("data-road-handle"));
+        return;
+      }
       if (adminMode && session && session.isAdmin) {
-        var target = event.target;
         var point = target && target.closest ? target.closest("[data-region-point]") : null;
         var marker = target && target.closest ? target.closest("[data-map-player]") : null;
         var npc = target && target.closest ? target.closest("[data-map-npc]") : null;
@@ -2582,6 +2828,21 @@
     mapWrapEl.addEventListener("pointermove", function (event) {
       if (itemDrag) {
         if (event.pointerId !== itemDrag.pointerId) return;
+        if (itemDrag.kind === "roadpoint") {
+          var handlePoint = mapFraction(event.clientX, event.clientY);
+          if (handlePoint && roadDraft && roadDraft.points[itemDrag.pointIndex]) {
+            roadDraft.points[itemDrag.pointIndex] = handlePoint;
+            if (itemDrag.node && itemDrag.node.setAttribute) {
+              itemDrag.node.setAttribute("cx", (handlePoint.x * 100).toFixed(3));
+              itemDrag.node.setAttribute("cy", (handlePoint.y * 100).toFixed(3));
+            }
+            var draftPath = document.getElementById("road-draft-path");
+            if (draftPath && draftPath.setAttribute) {
+              draftPath.setAttribute("d", roadPathD(roadDraft.points));
+            }
+          }
+          return;
+        }
         var px = event.clientX - itemDrag.x;
         var py = event.clientY - itemDrag.y;
         if (itemDrag.node && itemDrag.node.style) {
@@ -2625,6 +2886,16 @@
           try { mapWrapEl.releasePointerCapture(event.pointerId); } catch (err) {}
         }
         if (event.type === "pointercancel") return;
+        if (drag.kind === "roadpoint") {
+          var rdx = (event.clientX - drag.x) / (MAP_W * mapTransform.scale);
+          var rdy = (event.clientY - drag.y) / (MAP_H * mapTransform.scale);
+          if (Math.abs(rdx) + Math.abs(rdy) > 0.0005) {
+            roadSkipClick = true;
+            setTimeout(function () { roadSkipClick = false; }, 120);
+          }
+          renderGame();
+          return;
+        }
         var dx = (event.clientX - drag.x) / (MAP_W * mapTransform.scale);
         var dy = (event.clientY - drag.y) / (MAP_H * mapTransform.scale);
         if (Math.abs(dx) + Math.abs(dy) > 0.002) {
@@ -2663,6 +2934,24 @@
       },
       { passive: false }
     );
+
+    mapWrapEl.addEventListener("click", function (event) {
+      if (!roadMode || !roadDraft || !session || !session.isAdmin) return;
+      if (moved || roadSkipClick) {
+        roadSkipClick = false;
+        return;
+      }
+      var target = event.target;
+      if (target && target.closest &&
+          target.closest("[data-region-point],[data-map-player],[data-map-npc],[data-map-castle],[data-map-village],[data-road-handle]")) {
+        return;
+      }
+      var fraction = mapFraction(event.clientX, event.clientY);
+      if (!fraction) return;
+      roadDraft.points.push(fraction);
+      roadMsg = null;
+      renderGame();
+    });
 
     Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-player]"), function (marker) {
       marker.addEventListener("click", function (event) {
@@ -2752,6 +3041,9 @@
         openRegionId = id;
         mapFocusedRegion = null;
         regionHintId = null;
+        roadMode = false;
+        roadDraft = null;
+        roadMsg = null;
         pvpTarget = null;
         npcTarget = null;
         castleTarget = null;
@@ -2767,6 +3059,9 @@
         if (!region) return;
         openRegionId = region;
         mapFocusedRegion = null;
+        roadMode = false;
+        roadDraft = null;
+        roadMsg = null;
         renderGame();
       });
     });
@@ -2776,6 +3071,9 @@
       openRegionId = null;
       mapFocusedRegion = null;
       regionHintId = null;
+      roadMode = false;
+      roadDraft = null;
+      roadMsg = null;
       pvpTarget = null;
       npcTarget = null;
       castleTarget = null;
@@ -2835,6 +3133,11 @@
     var adminBtn = document.getElementById("admin-mode-btn");
     if (adminBtn) adminBtn.addEventListener("click", function () {
       adminMode = !adminMode;
+      if (!adminMode) {
+        roadMode = false;
+        roadDraft = null;
+        roadMsg = null;
+      }
       renderGame();
     });
     var imageBtn = document.getElementById("admin-image-btn");
@@ -3213,6 +3516,7 @@
     });
     bindAdminSettings();
     bindMarketEvents();
+    bindRoadEvents();
     initMap();
   }
 

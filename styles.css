@@ -1209,6 +1209,72 @@ input {
   stroke: rgba(224, 196, 136, 0.7);
 }
 
+.road.draft {
+  stroke: #7aa7e0;
+  stroke-width: 5;
+  stroke-dasharray: 6 5;
+  opacity: 0.95;
+}
+
+.road-editing {
+  pointer-events: none;
+}
+
+.road-handle {
+  fill: #7aa7e0;
+  stroke: #0b0a10;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.road-handle:active {
+  cursor: grabbing;
+}
+
+.admin-roads {
+  margin-top: 0.6rem;
+  border-top: 1px solid rgba(216, 189, 82, 0.25);
+  padding-top: 0.5rem;
+}
+
+.admin-roads-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+
+.admin-road-list {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+}
+
+.road-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+
+.road-tools .hint {
+  flex: 1;
+  min-width: 12rem;
+  font-size: 0.72rem;
+}
+
+.road-msg {
+  margin-top: 0.45rem;
+  font-size: 0.74rem;
+}
+
+.road-msg.ok { color: #7fd18b; }
+.road-msg.bad { color: #e08b8b; }
+
 .maint-screen {
   min-height: 100vh;
   display: flex;

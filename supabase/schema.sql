@@ -44,7 +44,8 @@ create trigger profiles_touch_updated_at
   for each row execute function public.touch_profiles_updated_at();
 
 -- Ranking público (solo lectura de datos no sensibles)
-create or replace view public.ranking as
+drop view if exists public.ranking;
+create view public.ranking as
 select
   p.id,
   coalesce(nullif(p.username, ''), 'Señor sin nombre') as username,
@@ -381,7 +382,8 @@ $fn$;
 
 grant execute on function public.attack_rival(uuid) to authenticated;
 
-create or replace view public.ranking as
+drop view if exists public.ranking;
+create view public.ranking as
 select
   p.id,
   coalesce(nullif(p.username, ''), 'Señor sin nombre') as username,

@@ -1355,6 +1355,53 @@ begin
 end;
 $fn$;
 
+-- ============================================================
+-- Región real bajo un punto (polígono, no solo caja)
+-- ============================================================
+
+create or replace function public.point_in_polygon(px numeric, py numeric, pts jsonb)
+returns boolean
+language plpgsql
+immutable
+as $fn$
+declare
+  n integer := jsonb_array_length(pts);
+  inside boolean := false;
+  i integer;
+  x1 numeric;
+  y1 numeric;
+  x2 numeric;
+  y2 numeric;
+begin
+  if n < 3 then return false; end if;
+  for i in 0..n - 1 loop
+    x1 := (pts -> i ->> 0)::numeric;
+    y1 := (pts -> i ->> 1)::numeric;
+    x2 := (pts -> ((i + 1) % n) ->> 0)::numeric;
+    y2 := (pts -> ((i + 1) % n) ->> 1)::numeric;
+    if ((y1 > py) <> (y2 > py))
+       and (px < (x2 - x1) * (py - y1) / nullif(y2 - y1, 0) + x1) then
+      inside := not inside;
+    end if;
+  end loop;
+  return inside;
+end;
+$fn$;
+
+create or replace function public.region_at(px numeric, py numeric)
+returns integer
+language sql
+stable
+as $fn$
+  select r.id
+  from public.regions r
+  where public.point_in_polygon(px, py, r.points)
+  order by r.id
+  limit 1;
+$fn$;
+
+grant execute on function public.region_at(numeric, numeric) to authenticated;
+
 create or replace function public.admin_move_village(target_id uuid, nx numeric, ny numeric)
 returns jsonb
 language plpgsql
@@ -1365,16 +1412,16 @@ declare
   px numeric := least(0.995, greatest(0.005, nx));
   py numeric := least(0.995, greatest(0.005, ny));
   reg integer;
+  current_region integer;
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
-  select r.id into reg
-  from public.regions r
-  where px between (r.bbox->>'x0')::numeric and (r.bbox->>'x1')::numeric
-    and py between (r.bbox->>'y0')::numeric and (r.bbox->>'y1')::numeric
-  order by r.id
-  limit 1;
+  select p.region_id into current_region from public.profiles p where p.id = target_id;
+  if not found then raise exception 'village not found'; end if;
+  reg := public.region_at(px, py);
 
-  if reg is null then raise exception 'outside region'; end if;
+  if reg is null or reg is distinct from current_region then
+    raise exception 'outside region';
+  end if;
 
   update public.profiles
     set x = px,
@@ -1505,12 +1552,7 @@ declare
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
 
-  select r.id into reg
-  from public.regions r
-  where px between (r.bbox->>'x0')::numeric and (r.bbox->>'x1')::numeric
-    and py between (r.bbox->>'y0')::numeric and (r.bbox->>'y1')::numeric
-  order by r.id
-  limit 1;
+  reg := public.region_at(px, py);
 
   if reg is null then raise exception 'outside region'; end if;
 

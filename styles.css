@@ -1282,6 +1282,59 @@ input {
   margin-bottom: 0.9rem;
 }
 
+.marker.castle .pin {
+  width: 20px;
+  height: 20px;
+  margin: 2px auto 0;
+  border-radius: 4px;
+  background: linear-gradient(#efd97a, #a8852f);
+  border: 2px solid #2a210f;
+  box-shadow: 0 0 0 3px rgba(216, 189, 82, 0.35), 0 2px 10px rgba(0, 0, 0, 0.7);
+  transform: none;
+}
+
+.marker.castle .mlabel {
+  color: #f3e3a8;
+  border-color: rgba(216, 189, 82, 0.55);
+}
+
+.map-legend .dot.castle {
+  background: #d8bd52;
+}
+
+.rp-king {
+  font-size: 0.58rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: rgba(216, 189, 82, 0.16);
+  border: 1px solid rgba(216, 189, 82, 0.5);
+  color: #e8d691;
+  white-space: nowrap;
+  max-width: 9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.king-banner {
+  margin: 0 1rem 0.6rem;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid rgba(216, 189, 82, 0.55);
+  border-radius: 8px;
+  background: rgba(216, 189, 82, 0.1);
+  color: #f0e2ad;
+  font-size: 0.82rem;
+}
+
+.king-banner b {
+  color: var(--gold);
+}
+
+.king-banner.empty {
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-sub);
+}
+
 .marker.npc .pin {
   width: 14px;
   height: 14px;

@@ -1375,12 +1375,13 @@
   /* ---------------- mundo compartido ---------------- */
 
   var world = {
-    players: [], regions: [], events: [], phones: [], npcs: [], online: 0,
+    players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0,
     settings: {}, maintenance: {}, me: {}, at: 0, error: "",
   };
   var worldTimer = null;
   var pvpTarget = null;
   var npcTarget = null;
+  var castleTarget = null;
   var pvpResult = null;
   var pvpBusy = false;
   var mapFitted = false;
@@ -1423,6 +1424,7 @@
         world.events = Array.isArray(data.events) ? data.events : [];
         world.phones = Array.isArray(data.phones) ? data.phones : [];
         world.npcs = Array.isArray(data.npcs) ? data.npcs : [];
+        world.castles = Array.isArray(data.castles) ? data.castles : [];
         world.online = Number(data.online || 0);
         world.speed = Number(data.speed || 1);
         if (state) state.speed = world.speed;
@@ -1461,9 +1463,10 @@
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
-    world = { players: [], regions: [], events: [], phones: [], npcs: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
+    world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
     pvpTarget = null;
     npcTarget = null;
+    castleTarget = null;
     pvpResult = null;
     adminMode = false;
     openRegionId = null;
@@ -1540,6 +1543,55 @@
     });
   }
 
+  function castleAttack(castleId) {
+    if (!isCloud() || pvpBusy) return;
+    var castle = null;
+    world.castles.forEach(function (item) {
+      if (String(item.id) === String(castleId)) castle = item;
+    });
+    if (!castle) return;
+    pvpBusy = true;
+    pvpResult = null;
+    renderGame();
+    flushCloudSave().then(function () {
+      return api("/rest/v1/rpc/attack_castle", {
+        method: "POST",
+        token: session.token,
+        body: { castle_id: castle.id },
+      });
+    }).then(function (result) {
+      pvpBusy = false;
+      if (!result.ok) {
+        var message = cloudErrorMessage(result);
+        if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
+        else if (message.indexOf("cooldown") !== -1) message = "Ya atacaste ese castillo hace menos de 10 minutos.";
+        else if (message.indexOf("no troops") !== -1) message = "No tienes tropas para atacar.";
+        else if (message.indexOf("already yours") !== -1) message = "Ese castillo ya es tuyo.";
+        else if (message.indexOf("not found") !== -1) message = "Ese castillo ya no existe.";
+        pvpResult = { ok: false, text: message };
+        renderGame();
+        return;
+      }
+      var data = result.data || {};
+      pvpResult = {
+        ok: true,
+        win: !!data.win,
+        text:
+          (data.win ? "¡Conquistaste " + (data.target || "el castillo") + "!" : "No pudiste tomar " + (data.target || "el castillo")) +
+          (data.win ? " Eres el nuevo rey · botín " + num(data.loot || 0) : "") +
+          " · bajas " + num(data.attacker_losses || 0) + "/" + num(data.defender_losses || 0),
+      };
+      addLog(String(data.text || "Batalla por el castillo"), data.win ? "good" : "bad");
+      return refreshOwnProfile().then(syncWorld).then(function () {
+        renderGame();
+      });
+    }).catch(function () {
+      pvpBusy = false;
+      pvpResult = { ok: false, text: "No se pudo atacar el castillo." };
+      renderGame();
+    });
+  }
+
   function npcAttack(npcId) {
     if (!isCloud() || pvpBusy) return;
     var npc = null;
@@ -1612,6 +1664,14 @@
 
   function npcLoot(npc) {
     return Math.round((Number(npc && npc.power) || 0) * 1.5 + 150);
+  }
+
+  function castleOf(regionId) {
+    var found = null;
+    world.castles.forEach(function (castle) {
+      if (String(castle.region) === String(regionId)) found = castle;
+    });
+    return found;
   }
 
   function pointInRegion(region, pos) {
@@ -1845,6 +1905,7 @@
         .map(function (region) {
           var c = polygonCentroid(region);
           var full = Number(region.villages) >= Number(region.capacity);
+          var castle = castleOf(region.id);
           return (
             '<button class="region-point' + (region.locked ? " locked" : "") + (full ? " full" : "") +
               (regionHintId === region.id || adminMode ? " hint" : "") + '" ' +
@@ -1854,6 +1915,7 @@
               '<span class="rp-dot">' + (region.locked ? "&#128274;" : num(region.villages)) + "</span>" +
               '<span class="rp-name">' + escapeHtml(region.name) + "</span>" +
               '<span class="rp-count">' + (region.locked ? "Bloqueada" : num(region.villages) + "/" + num(region.capacity)) + "</span>" +
+              (castle && castle.owner ? '<span class="rp-king">Rey: ' + escapeHtml(castle.owner_name) + "</span>" : "") +
             "</button>"
           );
         })
@@ -1875,12 +1937,24 @@
       npcs.forEach(function (npc) {
         points.push({ x: Number(npc.x), y: Number(npc.y) });
       });
+      var castle = castleOf(open.id);
+      if (castle && typeof castle.x === "number" && typeof castle.y === "number") {
+        points.push({ x: Number(castle.x), y: Number(castle.y) });
+      }
       var mineHere =
         !!meMarker &&
         (String(session.region) === String(open.id) || pointInRegion(open, mePos));
       if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y) });
 
-      layer = roadsSvg(points) + npcs
+      layer = roadsSvg(points) + (castle
+        ? '<button class="marker castle" data-map-castle="' + escapeHtml(castle.id) + '" ' +
+            'data-mx="' + castle.x + '" data-my="' + castle.y + '" ' +
+            'title="' + escapeHtml(castle.name) + (castle.owner ? " · Rey " + escapeHtml(castle.owner_name) : " · Sin rey") + '" ' +
+            'style="left:' + (castle.x * 100).toFixed(2) + "%;top:" + (castle.y * 100).toFixed(2) + '%">' +
+            '<span class="mlabel">' + escapeHtml(castle.name) + "</span>" +
+            '<span class="pin"></span>' +
+          "</button>"
+        : "") + npcs
         .map(function (npc) {
           return (
             '<button class="marker npc ' + npcTier(npc) + '" data-map-npc="' + escapeHtml(npc.id) + '" ' +
@@ -1937,6 +2011,39 @@
         "</div>";
     }
 
+    var castleCard = "";
+    if (castleTarget) {
+      world.castles.forEach(function (castle) {
+        if (String(castle.id) === String(castleTarget.id)) castleTarget = castle;
+      });
+      var castleRegion = regionById(castleTarget.region);
+      var castleDefense = Number(castleTarget.defense) || Number(castleTarget.power) || 0;
+      var castleLoot = Number(castleTarget.loot) || 0;
+      var castleShare = Math.round(castleLoot / 4);
+      var castleOdds = Math.round(clamp((power / Math.max(1, castleDefense)) * 100, 1, 99));
+      var castleMine = !!castleTarget.owner && String(castleTarget.owner) === String(session && session.userId);
+      castleCard =
+        '<div class="pvp-card castle-card">' +
+          '<div class="pvp-info"><b>' + escapeHtml(castleTarget.name || "Castillo del rey") + "</b>" +
+            "<span>Castillo del rey" + (castleRegion ? " · " + escapeHtml(castleRegion.name) : "") + "</span>" +
+            "<span>" + (castleTarget.owner
+              ? "Rey actual: <b>" + escapeHtml(castleTarget.owner_name) + "</b>"
+              : "Sin rey (neutral)") + "</span>" +
+            '<span class="npc-meta">Poder de defensa <b>' + num(castleDefense) + "</b></span>" +
+            "<span>Botín al conquistarlo: <b>" + num(castleLoot) + "</b> recursos (" +
+              num(castleShare) + " de oro, madera, comida y piedra).</span>" +
+            "<span>Éxito estimado: <b>" + num(castleOdds) + "%</b></span>" +
+            (castleMine ? '<span class="pvp-warn">Este castillo es tuyo: eres el rey.</span>' : "") +
+            (power <= 0 && !castleMine ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
+          "</div>" +
+          '<div class="pvp-actions">' +
+            '<button class="btn-primary" id="castle-attack-btn"' + (pvpBusy || castleMine || power <= 0 ? " disabled" : "") + ">" +
+              (pvpBusy ? "Atacando…" : "Atacar castillo") +
+            "</button>" +
+            '<button class="btn" id="castle-cancel-btn">Cancelar</button>' +
+          "</div>" +
+        "</div>";
+    }
     var npcCard = "";
     if (npcTarget) {
       var npcTierValue = npcTier(npcTarget);
@@ -1987,6 +2094,19 @@
       ? '<div class="pvp-result ' + (pvpResult.ok && pvpResult.win ? "win" : "lose") + '">' + escapeHtml(pvpResult.text) + "</div>"
       : "";
 
+    var kingBanner = "";
+    if (open) {
+      var openCastle = castleOf(open.id);
+      if (openCastle) {
+        kingBanner =
+          '<div class="king-banner' + (openCastle.owner ? "" : " empty") + '">' +
+            (openCastle.owner
+              ? "Rey de " + escapeHtml(open.name) + ": <b>" + escapeHtml(openCastle.owner_name) + "</b>"
+              : "Trono de " + escapeHtml(open.name) + ": sin rey") +
+          "</div>";
+      }
+    }
+
     var feed = world.events.length
       ? '<div class="world-feed"><h3>Actividad del mundo</h3>' +
         world.events
@@ -2018,6 +2138,8 @@
           "</span>" +
         "</div>" +
         adminPanel +
+        kingBanner +
+        castleCard +
         npcCard +
         targetCard +
         resultCard +
@@ -2035,6 +2157,7 @@
           '<span><i class="dot locked"></i>Bloqueada</span>' +
           '<span><i class="dot player"></i>Aldea</span>' +
           '<span><i class="dot npc"></i>NPC</span>' +
+          '<span><i class="dot castle"></i>Castillo</span>' +
           '<span class="grow"></span><span class="hint">Tu poder: ' + num(power) + "</span>" +
         "</div>" +
         feed +
@@ -2065,6 +2188,9 @@
     });
     world.npcs.forEach(function (npc) {
       if (String(npc.region) === String(region.id)) grow(npc);
+    });
+    world.castles.forEach(function (castle) {
+      if (String(castle.region) === String(region.id)) grow(castle);
     });
     if (session && session.village &&
         (String(session.region) === String(region.id) || pointInRegion(region, session.village))) {
@@ -2208,6 +2334,7 @@
         var point = target && target.closest ? target.closest("[data-region-point]") : null;
         var marker = target && target.closest ? target.closest("[data-map-player]") : null;
         var npc = target && target.closest ? target.closest("[data-map-npc]") : null;
+        var castleNode = target && target.closest ? target.closest("[data-map-castle]") : null;
         if (point) {
           itemDrag = { kind: "region", id: point.getAttribute("data-region-point"), x: event.clientX, y: event.clientY };
           return;
@@ -2218,6 +2345,10 @@
         }
         if (npc) {
           itemDrag = { kind: "npc", id: npc.getAttribute("data-map-npc"), x: event.clientX, y: event.clientY };
+          return;
+        }
+        if (castleNode) {
+          itemDrag = { kind: "castle", id: castleNode.getAttribute("data-map-castle"), x: event.clientX, y: event.clientY };
           return;
         }
       }
@@ -2287,8 +2418,9 @@
           } else {
             var point = mapFraction(event.clientX, event.clientY);
             if (point) {
-              adminAction(drag.kind === "npc" ? "admin_move_npc" : "admin_move_village",
-                { target_id: drag.id, nx: point.x, ny: point.y });
+              var moveFn = drag.kind === "npc" ? "admin_move_npc"
+                : drag.kind === "castle" ? "admin_move_castle" : "admin_move_village";
+              adminAction(moveFn, { target_id: drag.id, nx: point.x, ny: point.y });
             }
           }
         }
@@ -2324,6 +2456,7 @@
         var id = marker.getAttribute("data-map-player");
         pvpResult = null;
         npcTarget = null;
+        castleTarget = null;
         world.players.forEach(function (player) {
           if (String(player.id) === String(id)) pvpTarget = player;
         });
@@ -2339,8 +2472,25 @@
         pvpTarget = null;
         pvpResult = null;
         npcTarget = null;
+        castleTarget = null;
         world.npcs.forEach(function (npc) {
           if (String(npc.id) === String(id)) npcTarget = npc;
+        });
+        renderGame();
+      });
+    });
+
+    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-castle]"), function (marker) {
+      marker.addEventListener("click", function (event) {
+        if (event.stopPropagation) event.stopPropagation();
+        if (adminMode) return;
+        var id = marker.getAttribute("data-map-castle");
+        pvpTarget = null;
+        npcTarget = null;
+        pvpResult = null;
+        castleTarget = null;
+        world.castles.forEach(function (castle) {
+          if (String(castle.id) === String(id)) castleTarget = castle;
         });
         renderGame();
       });
@@ -2388,6 +2538,7 @@
         regionHintId = null;
         pvpTarget = null;
         npcTarget = null;
+        castleTarget = null;
         pvpResult = null;
         renderGame();
       });
@@ -2411,6 +2562,16 @@
       regionHintId = null;
       pvpTarget = null;
       npcTarget = null;
+      castleTarget = null;
+      pvpResult = null;
+      renderGame();
+    });
+
+    var castleAttackBtn = document.getElementById("castle-attack-btn");
+    if (castleAttackBtn) castleAttackBtn.addEventListener("click", function () { if (castleTarget) castleAttack(castleTarget.id); });
+    var castleCancelBtn = document.getElementById("castle-cancel-btn");
+    if (castleCancelBtn) castleCancelBtn.addEventListener("click", function () {
+      castleTarget = null;
       pvpResult = null;
       renderGame();
     });

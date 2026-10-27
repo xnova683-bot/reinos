@@ -105,6 +105,31 @@ create table if not exists public.npc_hits (
 
 alter table public.npc_hits enable row level security;
 
+create table if not exists public.castles (
+  id uuid primary key default gen_random_uuid(),
+  region_id integer not null unique references public.regions (id) on delete cascade,
+  name text not null,
+  x numeric,
+  y numeric,
+  power integer not null default 330,
+  loot integer not null default 800,
+  owner uuid references public.profiles (id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.castles enable row level security;
+drop policy if exists "castles_read" on public.castles;
+create policy "castles_read" on public.castles for select to authenticated using (true);
+
+create table if not exists public.castle_hits (
+  attacker uuid not null references public.profiles (id) on delete cascade,
+  castle uuid not null references public.castles (id) on delete cascade,
+  last_hit timestamptz not null default now(),
+  primary key (attacker, castle)
+);
+
+alter table public.castle_hits enable row level security;
+
 alter table public.regions enable row level security;
 alter table public.world_settings enable row level security;
 alter table public.pvp_hits enable row level security;
@@ -231,6 +256,35 @@ begin
     end loop;
   end loop;
 end $npcseed$;
+
+-- ============================================================
+-- Castillo del rey en el centro de cada región
+-- ============================================================
+
+do $castleseed$
+declare
+  region record;
+  cx numeric;
+  cy numeric;
+begin
+  if (select count(*) from public.castles) > 0 then
+    return;
+  end if;
+
+  for region in select * from public.regions order by id loop
+    cx := ((region.bbox->>'x0')::numeric + (region.bbox->>'x1')::numeric) / 2;
+    cy := ((region.bbox->>'y0')::numeric + (region.bbox->>'y1')::numeric) / 2;
+
+    insert into public.castles (region_id, name, x, y, power, loot)
+    values (
+      region.id,
+      'Castillo de ' || region.name,
+      cx, cy,
+      300 + region.id * 30,
+      800
+    );
+  end loop;
+end $castleseed$;
 
 -- ============================================================
 -- Utilidades
@@ -423,6 +477,17 @@ begin
           where p.region_id = r.id and coalesce(p.is_admin, false) = false)
       ) order by r.id)
       from public.regions r
+    ), '[]'::jsonb),
+    'castles', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', c.id, 'region', c.region_id, 'name', c.name,
+        'x', c.x, 'y', c.y, 'power', c.power, 'loot', c.loot,
+        'owner', c.owner,
+        'owner_name', coalesce(nullif(p.username, ''), 'Señor sin nombre'),
+        'defense', greatest(c.power, coalesce(public.state_power(p.state) * 1.15, 0))
+      ) order by c.region_id)
+      from public.castles c
+      left join public.profiles p on p.id = c.owner
     ), '[]'::jsonb),
     'npcs', coalesce((
       select jsonb_agg(jsonb_build_object(
@@ -754,6 +819,187 @@ $fn$;
 grant execute on function public.attack_npc(uuid) to authenticated;
 
 -- ============================================================
+-- Conquista del castillo del rey
+-- ============================================================
+
+create or replace function public.attack_castle(castle_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  a public.profiles%rowtype;
+  o public.profiles%rowtype;
+  c public.castles%rowtype;
+  has_owner boolean;
+  a_power numeric;
+  d_power numeric;
+  a_eff numeric;
+  d_eff numeric;
+  won boolean;
+  a_loss_frac numeric;
+  d_loss_frac numeric;
+  a_state jsonb;
+  d_state jsonb;
+  losses integer := 0;
+  d_losses integer := 0;
+  total_loot integer := 0;
+  share integer;
+  cap numeric;
+  cur numeric;
+  gain numeric;
+  cnt integer;
+  dead integer;
+  res text;
+  t text;
+  ts bigint := (extract(epoch from now()) * 1000)::bigint;
+  before_name text;
+  battle_text text;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+
+  select * into a from public.profiles where id = me for update;
+  if not found then raise exception 'attacker profile missing'; end if;
+
+  select * into c from public.castles where id = castle_id for update;
+  if not found then raise exception 'castle not found'; end if;
+
+  if exists (select 1 from public.regions rg where rg.id = c.region_id and rg.locked) then
+    raise exception 'region locked';
+  end if;
+
+  has_owner := c.owner is not null;
+  if has_owner and c.owner = me then raise exception 'already yours'; end if;
+
+  if exists (
+    select 1 from public.castle_hits
+    where attacker = me and castle = castle_id and last_hit > now() - interval '10 minutes'
+  ) then
+    raise exception 'cooldown';
+  end if;
+
+  a_power := public.state_power(a.state);
+  if a_power <= 0 then raise exception 'no troops'; end if;
+
+  d_power := c.power;
+  if has_owner then
+    select * into o from public.profiles where id = c.owner for update;
+    if found then
+      d_power := greatest(c.power, public.state_power(o.state) * 1.15);
+      before_name := coalesce(nullif(o.username, ''), 'Señor sin nombre');
+    end if;
+  end if;
+  if before_name is null then before_name := 'el rey anterior'; end if;
+
+  a_eff := a_power * (0.9 + random() * 0.25);
+  d_eff := d_power * (0.9 + random() * 0.2) * 1.1;
+  won := a_eff > d_eff;
+
+  if won then
+    a_loss_frac := least(0.55, greatest(0.03, (d_eff / greatest(a_eff, 1)) * 0.3));
+    d_loss_frac := least(0.5, greatest(0.01, (a_eff / greatest(d_eff, 1)) * 0.3));
+  else
+    a_loss_frac := least(0.85, greatest(0.45, 0.45 + (d_eff / greatest(a_eff, 1)) * 0.25));
+    d_loss_frac := least(0.2, greatest(0.01, (a_eff / greatest(d_eff, 1)) * 0.1));
+  end if;
+
+  a_state := jsonb_set(coalesce(a.state, '{}'::jsonb), '{troops}', coalesce(a.state->'troops', '{}'::jsonb), true);
+  a_state := jsonb_set(a_state, '{res}', coalesce(a.state->'res', '{}'::jsonb), true);
+
+  foreach t in array array['lanceros', 'arqueros', 'jinetes'] loop
+    cnt := coalesce((a_state->'troops'->>t)::integer, 0);
+    dead := least(cnt, round(cnt * a_loss_frac)::integer);
+    a_state := jsonb_set(a_state, array['troops', t], to_jsonb(cnt - dead), true);
+    losses := losses + dead;
+  end loop;
+
+  if has_owner and o.id is not null then
+    d_state := jsonb_set(coalesce(o.state, '{}'::jsonb), '{troops}', coalesce(o.state->'troops', '{}'::jsonb), true);
+    foreach t in array array['lanceros', 'arqueros', 'jinetes'] loop
+      cnt := coalesce((d_state->'troops'->>t)::integer, 0);
+      dead := least(cnt, round(cnt * d_loss_frac)::integer);
+      d_state := jsonb_set(d_state, array['troops', t], to_jsonb(cnt - dead), true);
+      d_losses := d_losses + dead;
+    end loop;
+  end if;
+
+  if won then
+    cap := public.state_storage(a.state);
+    share := round(c.loot / 4);
+    foreach res in array array['oro', 'madera', 'comida', 'piedra'] loop
+      cur := coalesce((a_state->'res'->>res)::numeric, 0);
+      gain := least(share, greatest(0, cap - cur));
+      if gain > 0 then
+        a_state := jsonb_set(a_state, array['res', res], to_jsonb(cur + gain), true);
+        total_loot := total_loot + gain::integer;
+      end if;
+    end loop;
+  end if;
+
+  battle_text := case
+    when won then coalesce(nullif(a.username, ''), 'Un señor') || ' conquistó ' || c.name || ' y fue proclamado rey'
+      || ' · botín ' || total_loot || ' · bajas ' || losses || '/' || d_losses
+    else coalesce(nullif(a.username, ''), 'Un señor') || ' no pudo tomar ' || c.name
+      || ' · bajas ' || losses || '/' || d_losses
+  end;
+
+  a_state := jsonb_set(a_state, '{log}',
+    jsonb_build_array(jsonb_build_object(
+      't', ts,
+      'text', case when won
+        then 'Conquistaste ' || c.name || ' y te proclamaron rey. Botín: ' || total_loot || ' recursos. Bajas: ' || losses || '.'
+        else 'No pudiste tomar ' || c.name || '. Bajas: ' || losses || '.'
+      end,
+      'kind', case when won then 'good' else 'bad' end
+    )) || coalesce(a.state->'log', '[]'::jsonb), true);
+
+  if has_owner and o.id is not null then
+    d_state := jsonb_set(d_state, '{log}',
+      jsonb_build_array(jsonb_build_object(
+        't', ts,
+        'text', case when won
+          then coalesce(nullif(a.username, ''), 'Un señor') || ' te arrebató ' || c.name || '. Ya no eres rey.'
+          else 'Defendiste ' || c.name || ' de ' || coalesce(nullif(a.username, ''), 'un señor') || '. Sigues siendo rey.'
+        end,
+        'kind', case when won then 'bad' else 'good' end
+      )) || coalesce(o.state->'log', '[]'::jsonb), true);
+
+    update public.profiles set state = d_state, updated_at = now() where id = o.id;
+  end if;
+
+  update public.profiles set state = a_state, updated_at = now() where id = me;
+
+  if won then
+    update public.castles set owner = me, updated_at = now() where id = castle_id;
+  end if;
+
+  insert into public.castle_hits (attacker, castle, last_hit)
+  values (me, castle_id, now())
+  on conflict (attacker, castle) do update set last_hit = excluded.last_hit;
+
+  insert into public.world_events (attacker, target, winner, loot, text)
+  values (
+    coalesce(nullif(a.username, ''), 'Señor sin nombre'),
+    c.name,
+    case when won then 'attacker' else 'defender' end,
+    total_loot,
+    battle_text
+  );
+
+  return jsonb_build_object(
+    'win', won, 'loot', total_loot, 'attacker_losses', losses, 'defender_losses', d_losses,
+    'target', c.name, 'target_power', d_power, 'owner_before', before_name,
+    'owner_after', case when won then coalesce(nullif(a.username, ''), 'Señor sin nombre') else before_name end,
+    'text', battle_text
+  );
+end;
+$fn$;
+
+grant execute on function public.attack_castle(uuid) to authenticated;
+
+-- ============================================================
 -- Administración del mapa (solo is_admin)
 -- ============================================================
 
@@ -911,6 +1157,40 @@ begin
   return jsonb_build_object('ok', true);
 end;
 $fn$;
+
+create or replace function public.admin_move_castle(target_id uuid, nx numeric, ny numeric)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  px numeric := least(0.995, greatest(0.005, nx));
+  py numeric := least(0.995, greatest(0.005, ny));
+  c public.castles%rowtype;
+  locked boolean := false;
+  inside boolean := false;
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+
+  select * into c from public.castles where id = target_id;
+  if not found then raise exception 'castle not found'; end if;
+
+  select r.locked,
+    px between (r.bbox->>'x0')::numeric and (r.bbox->>'x1')::numeric
+      and py between (r.bbox->>'y0')::numeric and (r.bbox->>'y1')::numeric
+    into locked, inside
+  from public.regions r where r.id = c.region_id;
+
+  if coalesce(locked, false) then raise exception 'region locked'; end if;
+  if not coalesce(inside, false) then raise exception 'outside region'; end if;
+
+  update public.castles set x = px, y = py, updated_at = now() where id = target_id;
+  return jsonb_build_object('ok', true);
+end;
+$fn$;
+
+grant execute on function public.admin_move_castle(uuid, numeric, numeric) to authenticated;
 
 create or replace function public.admin_move_npc(target_id uuid, nx numeric, ny numeric)
 returns jsonb

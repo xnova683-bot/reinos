@@ -115,6 +115,7 @@
       atk: 6,
       def: 8,
       hp: 30,
+      time: 3,
       desc: "Baratos y defensivos. La base de cualquier ejército.",
     },
     arqueros: {
@@ -123,6 +124,7 @@
       atk: 11,
       def: 4,
       hp: 22,
+      time: 5,
       desc: "Gran ataque a distancia, pero frágiles en primera línea.",
     },
     jinetes: {
@@ -131,9 +133,13 @@
       atk: 18,
       def: 10,
       hp: 55,
+      time: 9,
       desc: "Unidad de élite. Caros, pero devastadores en incursiones.",
     },
   };
+
+  var QUEUE_LIMIT = 4;
+  var DAILY_COOLDOWN_MS = 20 * 60 * 60 * 1000;
 
   var CAMP_NAMES = [
     ["Campamento saqueador", "easy"],
@@ -320,6 +326,9 @@
       },
       troops: { lanceros: 6, arqueros: 2, jinetes: 0 },
       campsCleared: 0,
+      lastDaily: 0,
+      buildQueue: [],
+      trainQueue: [],
       log: [
         { t: t, text: "Se fundó tu aldea. La " + RACES[raceId].name + " domina estas tierras.", kind: "good" },
       ],
@@ -335,6 +344,9 @@
     s.log = Array.isArray(s.log) ? s.log : [];
     s.campsCleared = Number(s.campsCleared || 0);
     s.lastGather = Number(s.lastGather || 0);
+    s.lastDaily = Number(s.lastDaily || 0);
+    s.buildQueue = Array.isArray(s.buildQueue) ? s.buildQueue : [];
+    s.trainQueue = Array.isArray(s.trainQueue) ? s.trainQueue : [];
     return s;
   }
 
@@ -585,6 +597,39 @@
     saveHandle = setInterval(saveGame, SAVE_EVERY_MS);
   }
 
+  function buildTimeMs(key, level) {
+    var seconds = Math.round(20 * Math.pow(1.45, level - 1)) + (key === "ayuntamiento" ? 12 : 0);
+    return seconds * 1000;
+  }
+
+  function queuedTroops() {
+    return (state.trainQueue || []).reduce(function (sum, entry) {
+      return sum + entry.count;
+    }, 0);
+  }
+
+  function processQueues() {
+    var t = now();
+    var changed = false;
+    while (state.buildQueue.length && state.buildQueue[0].endsAt <= t) {
+      var job = state.buildQueue.shift();
+      state.buildings[job.key] = job.toLevel;
+      addLog(BUILDINGS[job.key].name + " terminado: nivel " + job.toLevel + ".", "good");
+      changed = true;
+    }
+    while (state.trainQueue.length && state.trainQueue[0].endsAt <= t) {
+      var order = state.trainQueue.shift();
+      state.troops[order.key] = (state.troops[order.key] || 0) + order.count;
+      addLog("Entrenamiento completado: " + order.count + " " + TROOPS[order.key].name + ".", "good");
+      changed = true;
+    }
+    if (changed) {
+      saveGame();
+      renderGame();
+    }
+    return changed;
+  }
+
   function tick() {
     if (!state) return;
     var t = now();
@@ -598,6 +643,9 @@
       state.lastTick = t;
       refreshNumbers();
     }
+    if (!processQueues()) {
+      updateTimers();
+    }
     var gatherButton = document.getElementById("gather-btn");
     if (gatherButton) {
       var left = Math.ceil((GATHER_COOLDOWN_MS - (t - state.lastGather)) / 1000);
@@ -609,6 +657,66 @@
         gatherButton.textContent = "Recolectar recursos";
       }
     }
+    var dailyButton = document.getElementById("daily-btn");
+    if (dailyButton) {
+      var dailyLeft = DAILY_COOLDOWN_MS - (t - (state.lastDaily || 0));
+      if (dailyLeft > 0) {
+        dailyButton.disabled = true;
+        dailyButton.textContent = "Bonus diario en " + formatDuration(dailyLeft);
+      } else {
+        dailyButton.disabled = false;
+        dailyButton.textContent = "Reclamar bonus diario";
+      }
+    }
+  }
+
+  function formatDuration(ms) {
+    var totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+    var hours = Math.floor(totalSeconds / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    var seconds = totalSeconds % 60;
+    if (hours > 0) return hours + "h " + minutes + "m";
+    if (minutes > 0) return minutes + "m " + seconds + "s";
+    return seconds + "s";
+  }
+
+  function updateTimers() {
+    var nodes = document.querySelectorAll("[data-timer]");
+    Array.prototype.forEach.call(nodes, function (node) {
+      var endsAt = Number(node.getAttribute("data-timer"));
+      var startedAt = Number(node.getAttribute("data-start"));
+      var left = endsAt - now();
+      var progressNode = document.getElementById(node.getAttribute("data-bar"));
+      if (left <= 0) {
+        node.textContent = "Listo";
+        if (progressNode) progressNode.style.width = "100%";
+        return;
+      }
+      node.textContent = formatDuration(left);
+      if (progressNode && endsAt > startedAt) {
+        var pct = clamp(((now() - startedAt) / (endsAt - startedAt)) * 100, 1, 99);
+        progressNode.style.width = pct.toFixed(1) + "%";
+      }
+    });
+  }
+
+  function claimDaily() {
+    if (!state) return;
+    var t = now();
+    if (t - (state.lastDaily || 0) < DAILY_COOLDOWN_MS) return;
+    state.lastDaily = t;
+    var prod = totalProduction(state);
+    var limit = storageLimit(state.buildings);
+    var gained = 0;
+    RESOURCES.forEach(function (res) {
+      var bonus = prod[res] * 60;
+      var applied = Math.min(bonus, Math.max(0, limit - state.res[res]));
+      state.res[res] += applied;
+      gained += applied;
+    });
+    addLog("Bonus diario reclamado: +" + num(gained) + " recursos.", "good");
+    saveGame();
+    renderGame();
   }
 
   function gather() {
@@ -631,6 +739,11 @@
 
   function upgradeBuilding(key) {
     if (!state) return;
+    if (state.buildQueue.length >= 1) {
+      addLog("Ya hay una obra en curso. Espera a que termine.", "bad");
+      renderGame();
+      return;
+    }
     var level = state.buildings[key];
     var target = level + 1;
     var townhall = state.buildings.ayuntamiento;
@@ -646,8 +759,18 @@
       return;
     }
     pay(cost);
-    state.buildings[key] = target;
-    addLog(BUILDINGS[key].name + " mejorado al nivel " + target + ".", "good");
+    var startedAt = now();
+    var duration = buildTimeMs(key, level);
+    state.buildQueue.push({
+      key: key,
+      toLevel: target,
+      startedAt: startedAt,
+      endsAt: startedAt + duration,
+    });
+    addLog(
+      "Obra iniciada: " + BUILDINGS[key].name + " a nivel " + target + " (" + formatDuration(duration) + ").",
+      ""
+    );
     saveGame();
     renderGame();
   }
@@ -656,10 +779,15 @@
     if (!state) return;
     var def = TROOPS[key];
     var cap = troopCap(state.buildings.cuartel);
-    var current = armyCount(state);
+    var current = armyCount(state) + queuedTroops();
     var space = Math.max(0, cap - current);
     if (space <= 0) {
       addLog("Tu ejército está al máximo. Mejora el Cuartel.", "bad");
+      renderGame();
+      return;
+    }
+    if (state.trainQueue.length >= QUEUE_LIMIT) {
+      addLog("La cola de entrenamiento está llena.", "bad");
       renderGame();
       return;
     }
@@ -680,8 +808,19 @@
       return;
     }
     pay(cost);
-    state.troops[key] = (state.troops[key] || 0) + count;
-    addLog("Entrenaste " + count + " " + def.name + ".", "good");
+    var duration = count * def.time * 1000;
+    var lastEnd = state.trainQueue.length
+      ? state.trainQueue[state.trainQueue.length - 1].endsAt
+      : now();
+    var startedAt = Math.max(now(), lastEnd);
+    state.trainQueue.push({
+      key: key,
+      count: count,
+      startedAt: startedAt,
+      endsAt: startedAt + duration,
+      duration: duration,
+    });
+    addLog("Encolado: " + count + " " + def.name + " (" + formatDuration(duration) + ").", "");
     saveGame();
     renderGame();
   }
@@ -794,8 +933,10 @@
               num(Math.floor(Math.max.apply(null, RESOURCES.map(function (r) { return state.res[r]; })))) +
               " / " + num(limit) + "</b></div>" +
             '<button class="btn" id="gather-btn">Recolectar recursos</button>' +
+            '<button class="btn" id="daily-btn">Reclamar bonus diario</button>' +
             '<div class="mini-note">Recolectar da <b>' + Math.round(30 * race.gather) +
-              "</b> de cada recurso cada 30s (bonus de raza x" + race.gather.toFixed(2) + ").</div>" +
+              "</b> de cada recurso cada 30s (bonus de raza x" + race.gather.toFixed(2) +
+              "). El bonus diario entrega 1 minuto de producción por recurso cada 20h.</div>" +
           "</div>" +
         "</div>" +
         '<div class="panel">' +
@@ -853,6 +994,7 @@
 
   function buildingsView() {
     var keys = Object.keys(BUILDINGS);
+    var job = state.buildQueue[0] || null;
     var cards = keys
       .map(function (key) {
         var def = BUILDINGS[key];
@@ -861,6 +1003,7 @@
         var affordable = canAfford(cost);
         var townhall = state.buildings.ayuntamiento;
         var blocked = key !== "ayuntamiento" && level + 1 > townhall;
+        var busy = !!job;
         var desc = def.desc
           ? def.desc(level)
           : "Produce " + Math.round(productionPerMinute(state, key)) + " " + RES_LABEL[def.res] + " por minuto.";
@@ -872,14 +1015,28 @@
             return '<span class="' + (miss ? "miss" : "") + '">' + RES_ICON[res] + " " + num(cost[res]) + "</span>";
           })
           .join("");
+        var underWork = job && job.key === key;
+        var statusHtml = "";
+        if (underWork) {
+          statusHtml =
+            '<div class="progress"><span id="bar-' + key + '" style="width:1%"></span></div>' +
+            '<div class="mini-note">Termina en <b data-timer="' + job.endsAt + '" data-start="' + job.startedAt +
+            '" data-bar="bar-' + key + '">' + formatDuration(job.endsAt - now()) + "</b></div>";
+        }
         return (
           '<article class="bcard">' +
             '<div class="btop"><span class="bname">' + def.name + '</span><span class="lvl">Nv. ' + level + "</span></div>" +
             '<div class="bdesc">' + desc + "</div>" +
-            '<div class="cost">' + costHtml + "</div>" +
-            '<button class="btn" data-upgrade="' + key + '"' + (affordable && !blocked ? "" : " disabled") + ">" +
-              (blocked ? "Requiere Ayuntamiento " + (level + 1) : "Mejorar a Nv. " + (level + 1)) +
-            "</button>" +
+            (underWork
+              ? statusHtml
+              : '<div class="cost">' + costHtml + "</div>" +
+                '<button class="btn" data-upgrade="' + key + '"' + (affordable && !blocked && !busy ? "" : " disabled") + ">" +
+                  (blocked
+                    ? "Requiere Ayuntamiento " + (level + 1)
+                    : busy
+                    ? "Obra en curso"
+                    : "Mejorar a Nv. " + (level + 1)) +
+                "</button>") +
           "</article>"
         );
       })
@@ -889,6 +1046,30 @@
       '<div class="panel">' +
         '<div class="panel-head"><h2>Aldea</h2><span class="hint">7 edificios</span></div>' +
         '<div class="panel-body"><div class="building-grid">' + cards + "</div></div>" +
+      "</div>"
+    );
+  }
+
+  function queuePanel() {
+    if (!state.trainQueue.length) return "";
+    var rows = state.trainQueue
+      .map(function (order, index) {
+        var name = order.count + " x " + TROOPS[order.key].name;
+        return (
+          '<div class="queue-item">' +
+            '<div class="qrow"><span>' + name + '</span><b data-timer="' + order.endsAt +
+              '" data-start="' + order.startedAt + '" data-bar="qbar-' + index + '">' +
+              formatDuration(order.endsAt - now()) + "</b></div>" +
+            '<div class="progress"><span id="qbar-' + index + '" style="width:1%"></span></div>' +
+          "</div>"
+        );
+      })
+      .join("");
+    return (
+      '<div class="panel">' +
+        '<div class="panel-head"><h2>Cola de entrenamiento</h2><span class="hint">' +
+          state.trainQueue.length + " / " + QUEUE_LIMIT + "</span></div>" +
+        '<div class="panel-body"><div class="queue-list">' + rows + "</div></div>" +
       "</div>"
     );
   }
@@ -914,7 +1095,7 @@
         return (
           '<div class="troop">' +
             '<div class="trow"><span class="tname">' + def.name + '</span><span class="tcount">x' + num(state.troops[key] || 0) + "</span></div>" +
-            '<div class="tstats"><span>Ataque ' + atk.toFixed(1) + "</span><span>Defensa " + dfn.toFixed(1) + "</span><span>Vida " + hp.toFixed(0) + "</span></div>" +
+            '<div class="tstats"><span>Ataque ' + atk.toFixed(1) + "</span><span>Defensa " + dfn.toFixed(1) + "</span><span>Vida " + hp.toFixed(0) + "</span><span>" + def.time + "s /ud</span></div>" +
             '<div class="cost">' + costHtml + "</div>" +
             '<div class="buy">' +
               '<button class="btn" data-train="' + key + '" data-amount="1">+1</button>' +
@@ -927,9 +1108,14 @@
       .join("");
 
     return (
-      '<div class="panel">' +
-        '<div class="panel-head"><h2>Cuartel</h2><span class="hint">' + num(current) + " / " + num(cap) + " unidades</span></div>" +
-        '<div class="panel-body"><div class="troop-list">' + cards + "</div></div>" +
+      '<div class="col" style="gap:1rem;">' +
+        '<div class="panel">' +
+          '<div class="panel-head"><h2>Cuartel</h2><span class="hint">' +
+            num(current) + " / " + num(cap) + " unidades · " +
+            (state.trainQueue.length ? "entrenando" : "inactivo") + "</span></div>" +
+          '<div class="panel-body"><div class="troop-list">' + cards + "</div></div>" +
+        "</div>" +
+        queuePanel() +
       "</div>"
     );
   }
@@ -1042,6 +1228,7 @@
 
     bindGameEvents();
     refreshNumbers();
+    updateTimers();
   }
 
   function refreshNumbers() {
@@ -1071,6 +1258,8 @@
     if (logoutBtn) logoutBtn.addEventListener("click", logout);
     var gatherBtn = document.getElementById("gather-btn");
     if (gatherBtn) gatherBtn.addEventListener("click", gather);
+    var dailyBtn = document.getElementById("daily-btn");
+    if (dailyBtn) dailyBtn.addEventListener("click", claimDaily);
     Array.prototype.forEach.call(app.querySelectorAll("[data-upgrade]"), function (button) {
       button.addEventListener("click", function () {
         upgradeBuilding(button.getAttribute("data-upgrade"));

@@ -801,3 +801,47 @@ input {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+.progress {
+  height: 8px;
+  border-radius: 999px;
+  background: #262432;
+  overflow: hidden;
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #a98c2f, #e8d070);
+  transition: width 0.4s linear;
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.queue-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 0.55rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}
+
+.queue-item .qrow {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--text-sub);
+}
+
+.queue-item .qrow b {
+  color: #e9dcae;
+  font-variant-numeric: tabular-nums;
+}

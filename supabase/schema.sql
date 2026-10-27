@@ -96,6 +96,15 @@ alter table public.npcs enable row level security;
 drop policy if exists "npcs_read" on public.npcs;
 create policy "npcs_read" on public.npcs for select to authenticated using (true);
 
+create table if not exists public.npc_hits (
+  attacker uuid not null references public.profiles (id) on delete cascade,
+  npc uuid not null references public.npcs (id) on delete cascade,
+  last_hit timestamptz not null default now(),
+  primary key (attacker, npc)
+);
+
+alter table public.npc_hits enable row level security;
+
 alter table public.regions enable row level security;
 alter table public.world_settings enable row level security;
 alter table public.pvp_hits enable row level security;
@@ -631,6 +640,118 @@ end;
 $fn$;
 
 grant execute on function public.attack_rival(uuid) to authenticated;
+
+-- ============================================================
+-- Incursiones contra aldeas NPC
+-- ============================================================
+
+create or replace function public.attack_npc(npc_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  a public.profiles%rowtype;
+  n public.npcs%rowtype;
+  a_power numeric;
+  a_eff numeric;
+  e_eff numeric;
+  won boolean;
+  loss_frac numeric;
+  a_state jsonb;
+  losses integer := 0;
+  total_loot integer := 0;
+  share integer;
+  cap numeric;
+  cur numeric;
+  gain numeric;
+  cnt integer;
+  dead integer;
+  res text;
+  t text;
+  ts bigint := (extract(epoch from now()) * 1000)::bigint;
+  battle_text text;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+
+  select * into a from public.profiles where id = me for update;
+  if not found then raise exception 'attacker profile missing'; end if;
+  select * into n from public.npcs where id = npc_id;
+  if not found then raise exception 'npc not found'; end if;
+
+  if exists (select 1 from public.regions rg where rg.id = n.region_id and rg.locked) then
+    raise exception 'region locked';
+  end if;
+
+  if exists (
+    select 1 from public.npc_hits
+    where attacker = me and npc = npc_id and last_hit > now() - interval '5 minutes'
+  ) then
+    raise exception 'cooldown';
+  end if;
+
+  a_power := public.state_power(a.state);
+  if a_power <= 0 then raise exception 'no troops'; end if;
+
+  a_eff := a_power * (0.9 + random() * 0.2);
+  e_eff := n.power * (0.9 + random() * 0.2);
+  won := a_eff > e_eff;
+
+  if won then
+    loss_frac := least(0.55, greatest(0.02, (e_eff / greatest(a_eff, 1)) * 0.3));
+  else
+    loss_frac := least(0.85, greatest(0.45, 0.45 + (e_eff / greatest(a_eff, 1)) * 0.25));
+  end if;
+
+  a_state := jsonb_set(coalesce(a.state, '{}'::jsonb), '{troops}', coalesce(a.state->'troops', '{}'::jsonb), true);
+  a_state := jsonb_set(a_state, '{res}', coalesce(a.state->'res', '{}'::jsonb), true);
+
+  foreach t in array array['lanceros', 'arqueros', 'jinetes'] loop
+    cnt := coalesce((a_state->'troops'->>t)::integer, 0);
+    dead := least(cnt, round(cnt * loss_frac)::integer);
+    a_state := jsonb_set(a_state, array['troops', t], to_jsonb(cnt - dead), true);
+    losses := losses + dead;
+  end loop;
+
+  if won then
+    cap := public.state_storage(a.state);
+    share := round((n.power * 1.5 + 150) / 4);
+    foreach res in array array['oro', 'madera', 'comida', 'piedra'] loop
+      cur := coalesce((a_state->'res'->>res)::numeric, 0);
+      gain := least(share, greatest(0, cap - cur));
+      if gain > 0 then
+        a_state := jsonb_set(a_state, array['res', res], to_jsonb(cur + gain), true);
+        total_loot := total_loot + gain::integer;
+      end if;
+    end loop;
+  end if;
+
+  battle_text := case
+    when won then 'Victoria en ' || n.name || ': saqueaste ' || total_loot || ' recursos. Bajas: ' || losses || '.'
+    else 'Derrota en ' || n.name || '. Perdiste ' || losses || ' tropas y no hubo botín.'
+  end;
+
+  a_state := jsonb_set(a_state, '{log}',
+    jsonb_build_array(jsonb_build_object('t', ts, 'text', battle_text, 'kind', case when won then 'good' else 'bad' end))
+      || coalesce(a.state->'log', '[]'::jsonb), true);
+
+  update public.profiles set state = a_state, updated_at = now() where id = me;
+
+  insert into public.npc_hits (attacker, npc, last_hit)
+  values (me, npc_id, now())
+  on conflict (attacker, npc) do update set last_hit = excluded.last_hit;
+
+  return jsonb_build_object(
+    'win', won, 'loot', total_loot, 'attacker_losses', losses,
+    'target', n.name, 'target_power', n.power, 'attacker_power', a_power,
+    'text', battle_text
+  );
+end;
+$fn$;
+
+grant execute on function public.attack_npc(uuid) to authenticated;
 
 -- ============================================================
 -- Administración del mapa (solo is_admin)

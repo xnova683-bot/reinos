@@ -1380,6 +1380,7 @@
   };
   var worldTimer = null;
   var pvpTarget = null;
+  var npcTarget = null;
   var pvpResult = null;
   var pvpBusy = false;
   var mapFitted = false;
@@ -1462,6 +1463,7 @@
     worldTimer = null;
     world = { players: [], regions: [], events: [], phones: [], npcs: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
     pvpTarget = null;
+    npcTarget = null;
     pvpResult = null;
     adminMode = false;
     openRegionId = null;
@@ -1538,6 +1540,54 @@
     });
   }
 
+  function npcAttack(npcId) {
+    if (!isCloud() || pvpBusy) return;
+    var npc = null;
+    world.npcs.forEach(function (item) {
+      if (String(item.id) === String(npcId)) npc = item;
+    });
+    if (!npc) return;
+    pvpBusy = true;
+    pvpResult = null;
+    renderGame();
+    flushCloudSave().then(function () {
+      return api("/rest/v1/rpc/attack_npc", {
+        method: "POST",
+        token: session.token,
+        body: { npc_id: npc.id },
+      });
+    }).then(function (result) {
+      pvpBusy = false;
+      if (!result.ok) {
+        var message = cloudErrorMessage(result);
+        if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
+        else if (message.indexOf("cooldown") !== -1) message = "Ya saqueaste esa aldea hace menos de 5 minutos.";
+        else if (message.indexOf("no troops") !== -1) message = "No tienes tropas para atacar.";
+        else if (message.indexOf("not found") !== -1) message = "Esa aldea NPC ya no existe.";
+        pvpResult = { ok: false, text: message };
+        renderGame();
+        return;
+      }
+      var data = result.data || {};
+      pvpResult = {
+        ok: true,
+        win: !!data.win,
+        text:
+          (data.win ? "Victoria" : "Derrota") + " contra " + (data.target || "la aldea NPC") +
+          (data.win ? " · botín " + num(data.loot || 0) : "") +
+          " · bajas " + num(data.attacker_losses || 0),
+      };
+      addLog(String(data.text || "Incursión contra " + (data.target || "una aldea NPC")), data.win ? "good" : "bad");
+      return refreshOwnProfile().then(syncWorld).then(function () {
+        renderGame();
+      });
+    }).catch(function () {
+      pvpBusy = false;
+      pvpResult = { ok: false, text: "No se pudo completar la incursión." };
+      renderGame();
+    });
+  }
+
   /* ---------------- mapa por regiones ---------------- */
 
   var MAP_W = 3182;
@@ -1549,6 +1599,19 @@
       if (String(region.id) === String(id)) found = region;
     });
     return found;
+  }
+
+  function npcTier(npc) {
+    var power = Number(npc && npc.power) || 0;
+    return power < 80 ? "easy" : power < 120 ? "mid" : "hard";
+  }
+
+  function npcTierName(tier) {
+    return tier === "easy" ? "Fácil" : tier === "mid" ? "Media" : "Difícil";
+  }
+
+  function npcLoot(npc) {
+    return Math.round((Number(npc && npc.power) || 0) * 1.5 + 150);
   }
 
   function pointInRegion(region, pos) {
@@ -1820,7 +1883,7 @@
       layer = roadsSvg(points) + npcs
         .map(function (npc) {
           return (
-            '<button class="marker npc" data-map-npc="' + escapeHtml(npc.id) + '" ' +
+            '<button class="marker npc ' + npcTier(npc) + '" data-map-npc="' + escapeHtml(npc.id) + '" ' +
               'data-mx="' + npc.x + '" data-my="' + npc.y + '" ' +
               'title="' + escapeHtml(npc.name) + " · Poder " + num(npc.power) + '" ' +
               'style="left:' + (npc.x * 100).toFixed(2) + "%;top:" + (npc.y * 100).toFixed(2) + '%">' +
@@ -1874,6 +1937,32 @@
         "</div>";
     }
 
+    var npcCard = "";
+    if (npcTarget) {
+      var npcTierValue = npcTier(npcTarget);
+      var npcLootValue = npcLoot(npcTarget);
+      var npcShare = Math.round(npcLootValue / 4);
+      var npcOdds = Math.round(clamp((power / Math.max(1, Number(npcTarget.power))) * 100, 1, 99));
+      var npcRegion = regionById(npcTarget.region);
+      npcCard =
+        '<div class="pvp-card npc-card">' +
+          '<div class="pvp-info"><b>' + escapeHtml(npcTarget.name || "Aldea NPC") + "</b>" +
+            "<span>Aldea NPC" + (npcRegion ? " · " + escapeHtml(npcRegion.name) : "") + "</span>" +
+            '<span class="npc-meta">Dificultad <b class="tag ' + npcTierValue + '">' +
+              npcTierName(npcTierValue) + '</b> · Poder <b>' + num(npcTarget.power) + "</b></span>" +
+            "<span>Botín si la derrotas: <b>" + num(npcLootValue) + "</b> recursos (" +
+              num(npcShare) + " de oro, madera, comida y piedra).</span>" +
+            "<span>Éxito estimado: <b>" + num(npcOdds) + "%</b></span>" +
+            (power <= 0 ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
+          "</div>" +
+          '<div class="pvp-actions">' +
+            '<button class="btn-primary" id="npc-attack-btn"' + (pvpBusy || power <= 0 ? " disabled" : "") + ">" +
+              (pvpBusy ? "Atacando…" : "Atacar") +
+            "</button>" +
+            '<button class="btn" id="npc-cancel-btn">Cancelar</button>' +
+          "</div>" +
+        "</div>";
+    }
     var target = pvpTarget;
     var targetCard = "";
     if (target) {
@@ -1929,6 +2018,7 @@
           "</span>" +
         "</div>" +
         adminPanel +
+        npcCard +
         targetCard +
         resultCard +
         '<div class="worldmap' + (adminMode ? " editing" : "") + (open ? " labels" : "") + '" id="worldmap">' +
@@ -2233,8 +2323,24 @@
         if (adminMode) return;
         var id = marker.getAttribute("data-map-player");
         pvpResult = null;
+        npcTarget = null;
         world.players.forEach(function (player) {
           if (String(player.id) === String(id)) pvpTarget = player;
+        });
+        renderGame();
+      });
+    });
+
+    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-npc]"), function (marker) {
+      marker.addEventListener("click", function (event) {
+        if (event.stopPropagation) event.stopPropagation();
+        if (adminMode) return;
+        var id = marker.getAttribute("data-map-npc");
+        pvpTarget = null;
+        pvpResult = null;
+        npcTarget = null;
+        world.npcs.forEach(function (npc) {
+          if (String(npc.id) === String(id)) npcTarget = npc;
         });
         renderGame();
       });
@@ -2281,6 +2387,7 @@
         mapFocusedRegion = null;
         regionHintId = null;
         pvpTarget = null;
+        npcTarget = null;
         pvpResult = null;
         renderGame();
       });
@@ -2303,6 +2410,16 @@
       mapFocusedRegion = null;
       regionHintId = null;
       pvpTarget = null;
+      npcTarget = null;
+      pvpResult = null;
+      renderGame();
+    });
+
+    var npcAttackBtn = document.getElementById("npc-attack-btn");
+    if (npcAttackBtn) npcAttackBtn.addEventListener("click", function () { if (npcTarget) npcAttack(npcTarget.id); });
+    var npcCancelBtn = document.getElementById("npc-cancel-btn");
+    if (npcCancelBtn) npcCancelBtn.addEventListener("click", function () {
+      npcTarget = null;
       pvpResult = null;
       renderGame();
     });

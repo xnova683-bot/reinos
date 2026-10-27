@@ -1309,6 +1309,18 @@ input {
   background: #8a9a70;
 }
 
+.npc-card .npc-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.npc-card .tag {
+  font-size: 0.68rem;
+  padding: 0.05rem 0.5rem;
+}
+
 .admin-page .panel-body {
   display: grid;
   gap: 0.8rem;

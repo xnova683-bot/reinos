@@ -1282,6 +1282,10 @@ input {
   margin-bottom: 0.9rem;
 }
 
+.marker.castle {
+  z-index: 8;
+}
+
 .marker.castle .pin {
   width: 20px;
   height: 20px;

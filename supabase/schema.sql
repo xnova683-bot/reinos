@@ -251,7 +251,7 @@ begin
         region.name || ' · ' || suffixes[k + 1],
         region.id,
         least(0.99, greatest(0.01, bx + bw * (0.25 + k * 0.25))),
-        least(0.99, greatest(0.01, oy + bh * (0.3 + k * 0.2))),
+        least(0.99, greatest(0.01, oy + bh * (0.3 + k * 0.2) + (case when k = 1 then bh * 0.12 else 0 end))),
         60 + k * 40
       );
     end loop;

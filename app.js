@@ -1657,7 +1657,6 @@
 
   /* ---------------- world map ---------------- */
 
-  var MAP_IMAGE = "./assets/map.jpg";
   var MAP_W = 3182;
   var MAP_H = 2249;
 
@@ -1858,7 +1857,7 @@
         resultCard +
         '<div class="worldmap' + (mapEdit ? " editing" : "") + '" id="worldmap">' +
           '<div class="worldmap-stage" id="worldmap-stage" style="width:' + MAP_W + "px;height:" + MAP_H + 'px">' +
-            '<img src="' + MAP_IMAGE + '" alt="Mapa del mundo" draggable="false" />' +
+            '<div class="map-bg" aria-hidden="true"></div>' +
             regionOverlays +
             markers +
             playerMarkers +

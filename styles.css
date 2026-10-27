@@ -1197,88 +1197,31 @@ input {
   pointer-events: none;
 }
 
-.road {
-  stroke: rgba(214, 186, 126, 0.5);
-  stroke-width: 4;
-  stroke-dasharray: 9 7;
+.road-casing {
+  fill: none;
+  stroke: rgba(42, 31, 18, 0.5);
+  stroke-width: 7;
   stroke-linecap: round;
+  stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
+}
+
+.road {
+  fill: none;
+  stroke: rgba(214, 184, 119, 0.82);
+  stroke-width: 3.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.road-link {
+  stroke-width: 3.1;
 }
 
 .worldmap.labels .road {
-  stroke: rgba(224, 196, 136, 0.7);
+  stroke: rgba(230, 202, 143, 0.9);
 }
-
-.road.draft {
-  stroke: #7aa7e0;
-  stroke-width: 5;
-  stroke-dasharray: 6 5;
-  opacity: 0.95;
-}
-
-.road-editing {
-  pointer-events: none;
-}
-
-.road-handle {
-  fill: #7aa7e0;
-  stroke: #0b0a10;
-  stroke-width: 1.5;
-  vector-effect: non-scaling-stroke;
-  pointer-events: auto;
-  cursor: grab;
-}
-
-.road-handle:active {
-  cursor: grabbing;
-}
-
-.road-handle.locked {
-  pointer-events: none;
-  fill: #d8bd52;
-}
-
-.admin-roads {
-  margin-top: 0.6rem;
-  border-top: 1px solid rgba(216, 189, 82, 0.25);
-  padding-top: 0.5rem;
-}
-
-.admin-roads-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-}
-
-.admin-road-list {
-  display: grid;
-  gap: 0.3rem;
-  margin-top: 0.4rem;
-}
-
-.road-tools {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
-}
-
-.road-tools .hint {
-  flex: 1;
-  min-width: 12rem;
-  font-size: 0.72rem;
-}
-
-.road-msg {
-  margin-top: 0.45rem;
-  font-size: 0.74rem;
-}
-
-.road-msg.ok { color: #7fd18b; }
-.road-msg.bad { color: #e08b8b; }
 
 .maint-screen {
   min-height: 100vh;

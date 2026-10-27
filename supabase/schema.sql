@@ -131,20 +131,6 @@ create table if not exists public.castle_hits (
 
 alter table public.castle_hits enable row level security;
 
-create table if not exists public.roads (
-  id uuid primary key default gen_random_uuid(),
-  region_id integer not null references public.regions (id) on delete cascade,
-  points jsonb not null default '[]'::jsonb,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-
-create index if not exists roads_region_idx on public.roads (region_id);
-
-alter table public.roads enable row level security;
-drop policy if exists "roads_read" on public.roads;
-create policy "roads_read" on public.roads for select to authenticated using (true);
-
 alter table public.regions enable row level security;
 alter table public.world_settings enable row level security;
 alter table public.pvp_hits enable row level security;
@@ -527,12 +513,6 @@ begin
       ) order by c.region_id)
       from public.castles c
       left join public.profiles p on p.id = c.owner
-    ), '[]'::jsonb),
-    'roads', coalesce((
-      select jsonb_agg(jsonb_build_object(
-        'id', rd.id, 'region', rd.region_id, 'points', rd.points
-      ) order by rd.created_at)
-      from public.roads rd
     ), '[]'::jsonb),
     'npcs', coalesce((
       select jsonb_agg(jsonb_build_object(
@@ -1543,82 +1523,6 @@ end;
 $fn$;
 
 grant execute on function public.admin_move_castle(uuid, numeric, numeric) to authenticated;
-
-create or replace function public.admin_save_road(p_id uuid, p_region integer, p_points jsonb)
-returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
-declare
-  clean jsonb := '[]'::jsonb;
-  pt jsonb;
-  px numeric;
-  py numeric;
-  saved uuid;
-begin
-  if not public.is_admin() then
-    raise exception 'not admin';
-  end if;
-  if p_region is null or not exists (select 1 from public.regions r where r.id = p_region) then
-    raise exception 'region not found';
-  end if;
-  if p_points is null or jsonb_typeof(p_points) <> 'array' then
-    raise exception 'invalid points';
-  end if;
-  if jsonb_array_length(p_points) < 2 then
-    raise exception 'need at least 2 points';
-  end if;
-  if jsonb_array_length(p_points) > 40 then
-    raise exception 'too many points';
-  end if;
-  for pt in select value from jsonb_array_elements(p_points) loop
-    if jsonb_typeof(pt) <> 'array' or jsonb_array_length(pt) < 2 then
-      raise exception 'invalid points';
-    end if;
-    px := greatest(0, least(1, coalesce((pt ->> 0)::numeric, 0)));
-    py := greatest(0, least(1, coalesce((pt ->> 1)::numeric, 0)));
-    clean := clean || jsonb_build_array(jsonb_build_array(px, py));
-  end loop;
-
-  if p_id is null then
-    insert into public.roads (region_id, points) values (p_region, clean)
-    returning id into saved;
-  else
-    update public.roads
-      set region_id = p_region, points = clean, updated_at = now()
-      where id = p_id
-      returning id into saved;
-    if saved is null then
-      raise exception 'road not found';
-    end if;
-  end if;
-
-  return jsonb_build_object('ok', true, 'id', saved);
-end;
-$$;
-
-grant execute on function public.admin_save_road(uuid, integer, jsonb) to authenticated;
-
-create or replace function public.admin_delete_road(p_id uuid)
-returns jsonb
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  if not public.is_admin() then
-    raise exception 'not admin';
-  end if;
-  delete from public.roads where id = p_id;
-  if not found then
-    raise exception 'road not found';
-  end if;
-  return jsonb_build_object('ok', true);
-end;
-$$;
-
-grant execute on function public.admin_delete_road(uuid) to authenticated;
 
 create or replace function public.admin_move_npc(target_id uuid, nx numeric, ny numeric)
 returns jsonb

@@ -94,7 +94,7 @@ create policy "world_events_read"
   to authenticated
   using (true);
 
--- Asigna a cada aldea una parcela distinta del mapa (60 parcelas)
+-- Asigna a cada aldea una parcela distinta del mapa (500 parcelas)
 create or replace function public.prepare_profile()
 returns trigger
 language plpgsql
@@ -106,10 +106,10 @@ declare
   jitter integer;
 begin
   if new.x is null or new.y is null then
-    select count(*) into slot from public.profiles;
+    select count(*) % 500 into slot from public.profiles;
     jitter := ('x' || substr(md5(new.id::text), 1, 8))::bit(32)::bigint % 1000;
-    new.x := 0.1 + (slot % 10) * 0.08 + (jitter % 7) * 0.004;
-    new.y := 0.16 + ((slot / 10) % 6) * 0.13 + ((jitter / 7) % 7) * 0.004;
+    new.x := 0.1 + (slot % 25) * 0.0336 + (jitter % 7) * 0.0016;
+    new.y := 0.16 + ((slot / 25) % 20) * 0.0356 + ((jitter / 7) % 7) * 0.0016;
   end if;
   new.last_seen := now();
   if new.shield_until is null then

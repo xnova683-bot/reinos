@@ -1658,8 +1658,8 @@
   /* ---------------- world map ---------------- */
 
   var MAP_IMAGE = "./assets/map.jpg";
-  var MAP_W = 450;
-  var MAP_H = 318;
+  var MAP_W = 3182;
+  var MAP_H = 2249;
   var MAP_DEFAULTS = [
     { x: 0.28, y: 0.3 },
     { x: 0.66, y: 0.24 },
@@ -1699,6 +1699,7 @@
         return (
           '<button class="marker ' + camp.tier + '" data-map-camp="' + camp.id + '" ' +
             'title="' + escapeHtml(camp.name) + ' · Poder ' + num(camp.power) + " · " + odds + '%" ' +
+            'data-mx="' + pos.x + '" data-my="' + pos.y + '" ' +
             'style="left:' + (pos.x * 100).toFixed(2) + "%;top:" + (pos.y * 100).toFixed(2) + '%">' +
             '<span class="mlabel">' + escapeHtml(camp.name) + "</span>" +
             '<span class="pin"></span>' +
@@ -1720,6 +1721,7 @@
         return (
           '<button class="marker player ' + player.race + tag + '" data-map-player="' + escapeHtml(player.id) + '" ' +
             'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) + '" ' +
+            'data-mx="' + player.x + '" data-my="' + player.y + '" ' +
             'style="left:' + (player.x * 100).toFixed(2) + "%;top:" + (player.y * 100).toFixed(2) + '%">' +
             '<span class="mlabel">' + (player.shield ? "⛨ " : "") + escapeHtml(player.name) + "</span>" +
             '<span class="pin"></span>' +
@@ -1730,7 +1732,7 @@
 
     var mePos = session && session.village ? session.village : villagePosition();
     var villageMarker =
-      '<div class="marker me" data-map-village="1" style="left:' +
+      '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" style="left:' +
         (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
         '<span class="mlabel">Tu aldea</span><span class="pin"></span>' +
       "</div>";
@@ -1798,7 +1800,7 @@
         targetCard +
         resultCard +
         '<div class="worldmap' + (mapEdit ? " editing" : "") + '" id="worldmap">' +
-          '<div class="worldmap-stage" id="worldmap-stage">' +
+          '<div class="worldmap-stage" id="worldmap-stage" style="width:' + MAP_W + "px;height:" + MAP_H + 'px">' +
             '<img src="' + MAP_IMAGE + '" alt="Mapa del mundo" draggable="false" />' +
             markers +
             playerMarkers +
@@ -1835,7 +1837,30 @@
       "translate(" + mapTransform.x + "px," + mapTransform.y + "px) scale(" + mapTransform.scale + ")";
     mapStageEl.style.setProperty("--inv", String(1 / mapTransform.scale));
     if (mapStageEl.classList) {
-      mapStageEl.classList.toggle("labels", mapTransform.scale > mapFitScale * 1.6);
+      mapStageEl.classList.toggle("labels", mapTransform.scale > mapFitScale * 2.5);
+    }
+    cullMarkers();
+  }
+
+  function cullMarkers() {
+    if (!mapWrapEl || !mapWrapEl.querySelectorAll) return;
+    var w = mapWrapEl.clientWidth || 900;
+    var h = mapWrapEl.clientHeight || 480;
+    var markers;
+    try {
+      markers = mapWrapEl.querySelectorAll(".marker");
+    } catch (err) {
+      return;
+    }
+    for (var i = 0; i < markers.length; i++) {
+      var el = markers[i];
+      var mx = parseFloat(el.getAttribute("data-mx"));
+      var my = parseFloat(el.getAttribute("data-my"));
+      if (!isFinite(mx) || !isFinite(my)) continue;
+      var sx = mx * MAP_W * mapTransform.scale + mapTransform.x;
+      var sy = my * MAP_H * mapTransform.scale + mapTransform.y;
+      var visible = sx > -80 && sx < w + 80 && sy > -90 && sy < h + 90;
+      if (el.style) el.style.display = visible ? "" : "none";
     }
   }
 

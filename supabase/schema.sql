@@ -431,7 +431,9 @@ begin
   if tg_op = 'INSERT' then
     return new;
   end if;
-  if new.kb is distinct from old.kb and not coalesce(public.is_admin(), false) then
+  if new.kb is distinct from old.kb
+     and not coalesce(public.is_admin(), false)
+     and coalesce(current_setting('reinos.kb_ok', true), '') <> '1' then
     raise exception 'not allowed';
   end if;
   return new;
@@ -1022,6 +1024,266 @@ end;
 $fn$;
 
 grant execute on function public.attack_castle(uuid) to authenticated;
+
+-- ============================================================
+-- Mercado entre jugadores (trueque de recursos y tropas por KB)
+-- ============================================================
+
+create table if not exists public.market_orders (
+  id uuid primary key default gen_random_uuid(),
+  player uuid not null references public.profiles (id) on delete cascade,
+  side text not null check (side in ('sell', 'buy')),
+  asset text not null check (asset in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes')),
+  qty bigint not null check (qty > 0),
+  remaining bigint not null check (remaining >= 0),
+  price bigint not null check (price > 0),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists market_orders_active_idx on public.market_orders (created_at desc) where remaining > 0;
+
+alter table public.market_orders enable row level security;
+drop policy if exists "market_orders_read" on public.market_orders;
+create policy "market_orders_read" on public.market_orders for select to authenticated using (true);
+
+create or replace function public.market_take(s jsonb, asset text, qty bigint)
+returns jsonb
+language plpgsql
+as $fn$
+declare
+  have numeric;
+begin
+  s := coalesce(s, '{}'::jsonb);
+  s := jsonb_set(s, '{res}', coalesce(s->'res', '{}'::jsonb), true);
+  s := jsonb_set(s, '{troops}', coalesce(s->'troops', '{}'::jsonb), true);
+
+  if asset in ('oro', 'madera', 'comida', 'piedra') then
+    have := coalesce((s->'res'->>asset)::numeric, 0);
+    if have < qty then raise exception 'not enough'; end if;
+    s := jsonb_set(s, array['res', asset], to_jsonb(have - qty), true);
+  elsif asset in ('lanceros', 'arqueros', 'jinetes') then
+    have := coalesce((s->'troops'->>asset)::numeric, 0);
+    if have < qty then raise exception 'not enough'; end if;
+    s := jsonb_set(s, array['troops', asset], to_jsonb(have - qty), true);
+  else
+    raise exception 'invalid asset';
+  end if;
+  return s;
+end;
+$fn$;
+
+create or replace function public.market_give(s jsonb, asset text, qty bigint, cap numeric)
+returns jsonb
+language plpgsql
+as $fn$
+declare
+  cur numeric;
+begin
+  s := coalesce(s, '{}'::jsonb);
+  s := jsonb_set(s, '{res}', coalesce(s->'res', '{}'::jsonb), true);
+  s := jsonb_set(s, '{troops}', coalesce(s->'troops', '{}'::jsonb), true);
+
+  if asset in ('oro', 'madera', 'comida', 'piedra') then
+    cur := coalesce((s->'res'->>asset)::numeric, 0);
+    if cap is not null and cur + qty > cap then raise exception 'storage full'; end if;
+    s := jsonb_set(s, array['res', asset], to_jsonb(cur + qty), true);
+  elsif asset in ('lanceros', 'arqueros', 'jinetes') then
+    cur := coalesce((s->'troops'->>asset)::numeric, 0);
+    s := jsonb_set(s, array['troops', asset], to_jsonb(cur + qty), true);
+  else
+    raise exception 'invalid asset';
+  end if;
+  return s;
+end;
+$fn$;
+
+create or replace function public.market_list()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then raise exception 'not authenticated'; end if;
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', o.id,
+      'side', o.side,
+      'asset', o.asset,
+      'qty', o.qty,
+      'remaining', o.remaining,
+      'price', o.price,
+      'player', o.player,
+      'name', coalesce(nullif(p.username, ''), 'Señor sin nombre'),
+      'mine', o.player = uid,
+      'at', o.created_at
+    ) order by o.created_at desc)
+    from public.market_orders o
+    join public.profiles p on p.id = o.player
+    where o.remaining > 0
+  ), '[]'::jsonb);
+end;
+$fn$;
+
+grant execute on function public.market_list() to authenticated;
+
+create or replace function public.market_post(p_side text, p_asset text, p_qty bigint, p_price bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  a public.profiles%rowtype;
+  new_state jsonb;
+  total bigint;
+  oid uuid;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  if p_side not in ('sell', 'buy') then raise exception 'invalid side'; end if;
+  if p_asset not in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes') then
+    raise exception 'invalid asset';
+  end if;
+  if p_qty is null or p_qty <= 0 or p_qty > 1000000000 then raise exception 'invalid qty'; end if;
+  if p_price is null or p_price <= 0 or p_price > 1000000000 then raise exception 'invalid price'; end if;
+
+  if (select count(*) from public.market_orders where player = me and remaining > 0) >= 20 then
+    raise exception 'too many orders';
+  end if;
+
+  select * into a from public.profiles where id = me for update;
+  if not found then raise exception 'profile missing'; end if;
+
+  if p_side = 'sell' then
+    new_state := public.market_take(a.state, p_asset, p_qty);
+    update public.profiles set state = new_state, updated_at = now() where id = me;
+  else
+    total := p_qty * p_price;
+    if a.kb < total then raise exception 'not enough kb'; end if;
+    perform set_config('reinos.kb_ok', '1', true);
+    update public.profiles set kb = kb - total, updated_at = now() where id = me;
+  end if;
+
+  insert into public.market_orders (player, side, asset, qty, remaining, price)
+  values (me, p_side, p_asset, p_qty, p_qty, p_price)
+  returning id into oid;
+
+  return jsonb_build_object('ok', true, 'id', oid);
+end;
+$fn$;
+
+grant execute on function public.market_post(text, text, bigint, bigint) to authenticated;
+
+create or replace function public.market_fill(p_order_id uuid, p_qty bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  o public.market_orders%rowtype;
+  buyer public.profiles%rowtype;
+  seller public.profiles%rowtype;
+  fill bigint;
+  cost bigint;
+  buyer_state jsonb;
+  seller_state jsonb;
+  seller_id uuid;
+  buyer_id uuid;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  if p_qty is null or p_qty <= 0 then raise exception 'invalid qty'; end if;
+
+  select * into o from public.market_orders where id = p_order_id for update;
+  if not found then raise exception 'order not found'; end if;
+  if o.remaining <= 0 then raise exception 'closed'; end if;
+  if o.player = me then raise exception 'own order'; end if;
+
+  fill := least(p_qty, o.remaining);
+  cost := fill * o.price;
+
+  if o.side = 'sell' then
+    buyer_id := me;
+    seller_id := o.player;
+  else
+    buyer_id := o.player;
+    seller_id := me;
+  end if;
+
+  select * into buyer from public.profiles where id = buyer_id for update;
+  select * into seller from public.profiles where id = seller_id for update;
+  if buyer.id is null or seller.id is null then raise exception 'profile missing'; end if;
+
+  if o.side = 'sell' then
+    if buyer.kb < cost then raise exception 'not enough kb'; end if;
+    buyer_state := public.market_give(buyer.state, o.asset, fill, public.state_storage(buyer.state));
+    perform set_config('reinos.kb_ok', '1', true);
+    update public.profiles set state = buyer_state, kb = kb - cost, updated_at = now() where id = buyer_id;
+    update public.profiles set kb = kb + cost, updated_at = now() where id = seller_id;
+  else
+    seller_state := public.market_take(seller.state, o.asset, fill);
+    buyer_state := public.market_give(buyer.state, o.asset, fill, public.state_storage(buyer.state));
+    perform set_config('reinos.kb_ok', '1', true);
+    update public.profiles set state = seller_state, kb = kb + cost, updated_at = now() where id = seller_id;
+    update public.profiles set state = buyer_state, updated_at = now() where id = buyer_id;
+  end if;
+
+  update public.market_orders
+    set remaining = remaining - fill, updated_at = now()
+  where id = p_order_id;
+
+  return jsonb_build_object(
+    'ok', true, 'qty', fill, 'price', o.price, 'total', cost,
+    'asset', o.asset, 'side', o.side,
+    'buyer', coalesce(nullif(buyer.username, ''), 'Señor sin nombre'),
+    'seller', coalesce(nullif(seller.username, ''), 'Señor sin nombre')
+  );
+end;
+$fn$;
+
+grant execute on function public.market_fill(uuid, bigint) to authenticated;
+
+create or replace function public.market_cancel(p_order_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  o public.market_orders%rowtype;
+  a public.profiles%rowtype;
+  new_state jsonb;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+
+  select * into o from public.market_orders where id = p_order_id for update;
+  if not found then raise exception 'order not found'; end if;
+  if o.player <> me then raise exception 'not yours'; end if;
+  if o.remaining <= 0 then return jsonb_build_object('ok', true, 'returned', 0); end if;
+
+  select * into a from public.profiles where id = me for update;
+
+  if o.side = 'sell' then
+    new_state := public.market_give(a.state, o.asset, o.remaining, public.state_storage(a.state));
+    update public.profiles set state = new_state, updated_at = now() where id = me;
+  else
+    perform set_config('reinos.kb_ok', '1', true);
+    update public.profiles set kb = kb + o.remaining * o.price, updated_at = now() where id = me;
+  end if;
+
+  update public.market_orders set remaining = 0, updated_at = now() where id = p_order_id;
+
+  return jsonb_build_object('ok', true, 'returned', o.remaining);
+end;
+$fn$;
+
+grant execute on function public.market_cancel(uuid) to authenticated;
 
 -- ============================================================
 -- Administración del mapa (solo is_admin)

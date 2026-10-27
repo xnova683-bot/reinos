@@ -14,6 +14,11 @@
 
   var RESOURCES = ["oro", "madera", "comida", "piedra"];
   var RES_LABEL = { oro: "Oro", madera: "Madera", comida: "Comida", piedra: "Piedra" };
+  var MARKET_ASSETS = {
+    oro: "Oro", madera: "Madera", comida: "Comida", piedra: "Piedra",
+    lanceros: "Lanceros", arqueros: "Arqueros", jinetes: "Jinetes",
+  };
+  var MARKET_TROOPS = { lanceros: true, arqueros: true, jinetes: true };
   var RES_ICON = { oro: "◈", madera: "❖", comida: "❁", piedra: "▲" };
 
   var RACES = {
@@ -1385,6 +1390,9 @@
     settings: {}, maintenance: {}, me: {}, at: 0, error: "",
   };
   var worldTimer = null;
+  var market = { orders: [], error: "", at: 0 };
+  var marketMsg = null;
+  var marketBusy = false;
   var pvpTarget = null;
   var npcTarget = null;
   var castleTarget = null;
@@ -1467,10 +1475,79 @@
     }, 10000);
   }
 
+  function syncMarket() {
+    if (!isCloud()) return Promise.resolve();
+    return api("/rest/v1/rpc/market_list", { method: "POST", token: session.token, body: {} })
+      .then(function (result) {
+        if (!result.ok) {
+          market.error = cloudErrorMessage(result);
+          return;
+        }
+        market.orders = Array.isArray(result.data) ? result.data : [];
+        market.error = "";
+        market.at = now();
+      })
+      .catch(function () {
+        market.error = "No se pudo cargar el mercado.";
+      });
+  }
+
+  function marketAssetName(asset) {
+    return MARKET_ASSETS[asset] || String(asset);
+  }
+
+  function marketAction(fn, body) {
+    if (!isCloud() || marketBusy) return;
+    marketBusy = true;
+    marketMsg = null;
+    renderGame();
+    flushCloudSave().then(function () {
+      return api("/rest/v1/rpc/" + fn, { method: "POST", token: session.token, body: body });
+    })
+      .then(function (result) {
+        marketBusy = false;
+        if (!result.ok) {
+          var message = cloudErrorMessage(result);
+          if (message.indexOf("not enough kb") !== -1) message = "No tienes KB suficientes.";
+          else if (message.indexOf("not enough") !== -1) message = "No tienes suficientes unidades de ese bien.";
+          else if (message.indexOf("storage full") !== -1) message = "Tu almacén está lleno para ese recurso.";
+          else if (message.indexOf("own order") !== -1) message = "No puedes operar con tu propia oferta.";
+          else if (message.indexOf("closed") !== -1) message = "Esa oferta ya se agotó.";
+          else if (message.indexOf("too many orders") !== -1) message = "Tienes demasiadas ofertas activas (máximo 20).";
+          else if (message.indexOf("invalid") !== -1) message = "Cantidad o precio inválido.";
+          else if (message.indexOf("not yours") !== -1) message = "Esa oferta no es tuya.";
+          marketMsg = { ok: false, text: message };
+          renderGame();
+          return;
+        }
+        var data = result.data || {};
+        marketMsg = {
+          ok: true,
+          text:
+            fn === "market_post"
+              ? "Oferta publicada en el mercado."
+              : fn === "market_fill"
+                ? "Operación completada: " + num(data.qty || 0) + " × " +
+                  marketAssetName(data.asset) + " por " + num(data.total || 0) + " KB."
+                : "Oferta cancelada y bienes devueltos.",
+        };
+        return refreshOwnProfile().then(syncMarket).then(function () {
+          if (view === "mercado") renderGame();
+        });
+      })
+      .catch(function () {
+        marketBusy = false;
+        marketMsg = { ok: false, text: "No se pudo completar la operación." };
+        renderGame();
+      });
+  }
+
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
     world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
+    market = { orders: [], error: "", at: 0 };
+    marketMsg = null;
     pvpTarget = null;
     npcTarget = null;
     castleTarget = null;
@@ -1832,6 +1909,83 @@
           (world.maintenance && world.maintenance.active ? "Desactivar mantenimiento" : "Activar mantenimiento") +
         "</button>" +
         '<div class="admin-maint-error" id="maint-error"></div>' +
+      "</div>"
+    );
+  }
+
+  function marketView() {
+    var options = Object.keys(MARKET_ASSETS)
+      .map(function (asset) {
+        return '<option value="' + asset + '">' + MARKET_ASSETS[asset] + "</option>";
+      })
+      .join("");
+
+    var rows = market.orders
+      .map(function (order) {
+        var mine = !!order.mine;
+        var total = Number(order.remaining) * Number(order.price);
+        return (
+          '<div class="market-order' + (mine ? " mine" : "") + '">' +
+            '<span class="mo-tag ' + (order.side === "sell" ? "sell" : "buy") + '">' +
+              (order.side === "sell" ? "Venta" : "Demanda") + "</span>" +
+            '<div class="mo-main"><b>' + num(order.remaining) + " " +
+              escapeHtml(marketAssetName(order.asset)) + "</b>" +
+              (Number(order.qty) !== Number(order.remaining)
+                ? ' <span class="hint">de ' + num(order.qty) + "</span>"
+                : "") +
+              "<span>" + num(order.price) + " KB/u · total " + num(total) + " KB · " +
+                (mine ? "tu oferta" : escapeHtml(String(order.name))) + "</span>" +
+            "</div>" +
+            '<div class="mo-actions">' +
+              (mine
+                ? '<button class="btn small" data-market-cancel="' + escapeHtml(String(order.id)) + '">Cancelar</button>'
+                : '<button class="btn small" data-market-fill="' + escapeHtml(String(order.id)) +
+                  '" data-market-side="' + escapeHtml(String(order.side)) +
+                  '" data-market-left="' + escapeHtml(String(order.remaining)) + '"' +
+                  (marketBusy ? " disabled" : "") + ">" +
+                  (order.side === "sell" ? "Comprar" : "Vender") + "</button>") +
+            "</div>" +
+          "</div>"
+        );
+      })
+      .join("");
+
+    var msg = marketMsg
+      ? '<div class="market-msg ' + (marketMsg.ok ? "ok" : "bad") + '">' + escapeHtml(marketMsg.text) + "</div>"
+      : "";
+
+    return (
+      '<div class="panel market-page">' +
+        '<div class="panel-head"><h2>Mercado</h2>' +
+          '<span class="hint">Recursos y tropas por KB</span>' +
+        "</div>" +
+        '<div class="panel-body">' +
+          '<div class="market-top">Tu KB: <b>' + num((session && session.kb) || 0) +
+            "</b> · Ofertas activas: <b>" + market.orders.length + "</b></div>" +
+          msg +
+          '<form id="market-form" class="market-form">' +
+            '<label>Operación<select id="market-side">' +
+              '<option value="sell">Vender (entrego el bien)</option>' +
+              '<option value="buy">Comprar (demanda, bloqueo KB)</option>' +
+            "</select></label>" +
+            '<label>Bien<select id="market-asset">' + options + "</select></label>" +
+            '<label>Cantidad<input id="market-qty" type="number" min="1" step="1" value="100" /></label>' +
+            '<label>KB por unidad<input id="market-price" type="number" min="1" step="1" value="1" /></label>' +
+            '<button class="btn-primary" type="submit"' + (marketBusy ? " disabled" : "") + ">" +
+              (marketBusy ? "Publicando…" : "Publicar oferta") +
+            "</button>" +
+          "</form>" +
+          '<div class="market-note">Al vender, el bien queda en custodia hasta que alguien lo compre. ' +
+            'En una demanda se bloquean tus KB y otro jugador te entrega el bien. Puedes cancelar cuando quieras ' +
+            "y recuperas lo que quede.</div>" +
+          '<div class="market-list">' +
+            (market.error
+              ? '<div class="market-msg bad">' + escapeHtml(market.error) + "</div>"
+              : rows || '<div class="market-empty">' +
+                (market.at ? "No hay ofertas activas. Publica la primera." : "Cargando mercado…") +
+                "</div>") +
+          "</div>" +
+        "</div>" +
       "</div>"
     );
   }
@@ -2780,12 +2934,14 @@
       ["aldea", "Aldea"],
       ["cuartel", "Cuartel"],
       ["mapa", "Mapa"],
+      ["mercado", "Mercado"],
       ["raza", "Raza"],
     ];
     if (session && session.isAdmin) tabs.push(["admin", "Administrar WoW"]);
     var center;
     if (view === "cuartel") center = troopsView();
     else if (view === "mapa") center = mapView();
+    else if (view === "mercado") center = marketView();
     else if (view === "raza") center = raceView();
     else if (view === "admin" && session && session.isAdmin) center = adminView();
     else center = buildingsView();
@@ -2920,11 +3076,67 @@
     });
   }
 
+  function bindMarketEvents() {
+    var form = document.getElementById("market-form");
+    if (form) {
+      form.addEventListener("submit", function (event) {
+        if (event.preventDefault) event.preventDefault();
+        if (marketBusy) return;
+        var sideEl = document.getElementById("market-side");
+        var assetEl = document.getElementById("market-asset");
+        var qtyEl = document.getElementById("market-qty");
+        var priceEl = document.getElementById("market-price");
+        var qty = Math.trunc(Number(qtyEl ? qtyEl.value : 0));
+        var price = Math.trunc(Number(priceEl ? priceEl.value : 0));
+        if (!qty || qty < 1 || !price || price < 1) {
+          marketMsg = { ok: false, text: "Cantidad y precio deben ser números enteros mayores que 0." };
+          renderGame();
+          return;
+        }
+        marketAction("market_post", {
+          p_side: (sideEl && sideEl.value) || "sell",
+          p_asset: (assetEl && assetEl.value) || "oro",
+          p_qty: qty,
+          p_price: price,
+        });
+      });
+    }
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-market-fill]"), function (button) {
+      button.addEventListener("click", function () {
+        var left = Number(button.getAttribute("data-market-left")) || 1;
+        var raw = window.prompt("¿Cuántas unidades quieres operar? (quedan " + left + ")");
+        if (raw === null) return;
+        var qty = Math.trunc(Number(raw));
+        if (!qty || qty < 1) {
+          marketMsg = { ok: false, text: "Escribe una cantidad válida." };
+          renderGame();
+          return;
+        }
+        marketAction("market_fill", {
+          p_order_id: button.getAttribute("data-market-fill"),
+          p_qty: qty,
+        });
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-market-cancel]"), function (button) {
+      button.addEventListener("click", function () {
+        marketAction("market_cancel", { p_order_id: button.getAttribute("data-market-cancel") });
+      });
+    });
+  }
+
   function bindGameEvents() {
     Array.prototype.forEach.call(app.querySelectorAll("[data-view]"), function (button) {
       button.addEventListener("click", function () {
         view = button.getAttribute("data-view");
         if (view === "mapa" && isCloud()) syncWorld();
+        if (view === "mercado" && isCloud()) {
+          syncMarket().then(function () {
+            if (view === "mercado") renderGame();
+          });
+        }
         if (view === "admin" && isCloud() && (!world.at || now() - world.at > 5000)) {
           syncWorld().then(function () {
             if (view === "admin") renderGame();
@@ -2950,6 +3162,7 @@
       });
     });
     bindAdminSettings();
+    bindMarketEvents();
     initMap();
   }
 

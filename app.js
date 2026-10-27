@@ -520,6 +520,7 @@
   }
 
   function startCloudSession(auth, email, password, phone, name) {
+    maintReset();
     session = {
       mode: "cloud",
       email: email,
@@ -759,6 +760,7 @@
   }
 
   function logout() {
+    maintReset();
     var closing = session;
     saveGame();
     if (closing && closing.mode === "cloud" && closing.token) {
@@ -1367,7 +1369,7 @@
 
   var world = {
     players: [], regions: [], events: [], phones: [], online: 0,
-    settings: {}, me: {}, at: 0, error: "",
+    settings: {}, maintenance: {}, me: {}, at: 0, error: "",
   };
   var worldTimer = null;
   var pvpTarget = null;
@@ -1385,6 +1387,9 @@
   var regionHintId = null;
   var regionPressTimer = null;
   var regionLongPressed = false;
+  var maintError = "";
+  var maintBusy = false;
+  var maintGateState = false;
 
   function isCloud() {
     return !!(session && session.mode === "cloud" && session.token);
@@ -1403,12 +1408,15 @@
           return;
         }
         var data = result.data || {};
-        world.players = Array.isArray(data.players) ? data.players : [];
+        world.players = (Array.isArray(data.players) ? data.players : []).filter(function (player) {
+          return !player.admin;
+        });
         world.regions = Array.isArray(data.regions) ? data.regions : [];
         world.events = Array.isArray(data.events) ? data.events : [];
         world.phones = Array.isArray(data.phones) ? data.phones : [];
         world.online = Number(data.online || 0);
         world.settings = data.settings || {};
+        world.maintenance = data.maintenance || {};
         world.me = data.me || {};
         world.at = now();
         world.error = "";
@@ -1417,7 +1425,13 @@
           session.region = world.me.region;
           writeJSON(SESSION_KEY, session);
         }
-        if (view === "mapa" && !adminMode) renderGame();
+        var gate = maintenanceLocked();
+        if (gate !== maintGateState) {
+          maintGateState = gate;
+          if (session) renderGame();
+        } else if (!gate && view === "mapa" && !adminMode) {
+          renderGame();
+        }
       })
       .catch(function () {
         world.error = "Sin conexión con el mundo compartido.";
@@ -1436,7 +1450,7 @@
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
-    world = { players: [], regions: [], events: [], phones: [], online: 0, settings: {}, me: {}, at: 0, error: "" };
+    world = { players: [], regions: [], events: [], phones: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
     pvpTarget = null;
     pvpResult = null;
     adminMode = false;
@@ -1625,7 +1639,12 @@
         pvpResult = {
         ok: true,
         win: true,
-        text: fn === "admin_set_password" ? "Contraseña del jugador actualizada." : "Mapa actualizado.",
+        text:
+          fn === "admin_set_password"
+            ? "Contraseña del jugador actualizada."
+            : fn === "admin_set_maintenance"
+              ? "Portal de mantenimiento actualizado."
+              : "Mapa actualizado.",
       };
         return syncWorld().then(function () {
           renderGame();
@@ -1740,6 +1759,19 @@
               .join("") +
           "</div>" +
           (adminMode ? '<div class="admin-hint">Arrastra un punto de región en el mundo o una aldea dentro de su región.</div>' : "") +
+          '<div class="admin-maint"><b>Portal de mantenimiento</b>' +
+            '<div class="admin-maint-state">' +
+              (world.maintenance && world.maintenance.active ? "Activo ahora" : "Inactivo") +
+            "</div>" +
+            '<textarea id="maint-message-input" rows="2" placeholder="Mensaje para los jugadores">' +
+              escapeHtml((world.maintenance && world.maintenance.message) || "") +
+            "</textarea>" +
+            '<input id="maint-password-input" type="password" autocomplete="new-password" ' +
+              'placeholder="Contraseña de acceso (vacío = sin contraseña)" />' +
+            '<button class="btn" id="maint-toggle">' +
+              (world.maintenance && world.maintenance.active ? "Desactivar mantenimiento" : "Activar mantenimiento") +
+            "</button>" +
+          "</div>" +
           '<div class="admin-phones"><b>Jugadores registrados (' + world.phones.length + ")</b>" +
             (world.phones.length
               ? world.phones
@@ -2177,6 +2209,19 @@
       });
     });
 
+    var maintToggle = document.getElementById("maint-toggle");
+    if (maintToggle) {
+      maintToggle.addEventListener("click", function () {
+        var messageEl = document.getElementById("maint-message-input");
+        var passwordEl = document.getElementById("maint-password-input");
+        adminAction("admin_set_maintenance", {
+          p_active: !(world.maintenance && world.maintenance.active),
+          p_message: messageEl ? messageEl.value : "",
+          p_password: passwordEl ? passwordEl.value : "",
+        });
+      });
+    }
+
     var backBtn = document.getElementById("map-back-btn");
     if (backBtn) backBtn.addEventListener("click", function () {
       openRegionId = null;
@@ -2265,9 +2310,111 @@
     );
   }
 
+  function maintApproved(m) {
+    try {
+      return sessionStorage.getItem("reinos:maint") === String((m && m.version) || 0);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function maintMark(m) {
+    try {
+      sessionStorage.setItem("reinos:maint", String((m && m.version) || 0));
+    } catch (error) {}
+  }
+
+  function maintReset() {
+    try {
+      sessionStorage.removeItem("reinos:maint");
+    } catch (error) {}
+  }
+
+  function maintenanceLocked() {
+    if (!isCloud() || !session) return false;
+    if (session.isAdmin) return false;
+    var m = world.maintenance;
+    if (!m || !m.active) return false;
+    return !maintApproved(m);
+  }
+
+  function renderMaintenance() {
+    var m = world.maintenance || {};
+    var msg = m.message || "Estamos trabajando en el reino. Vuelve pronto.";
+
+    app.innerHTML =
+      '<div class="maint-screen"><div class="maint-card">' +
+        '<div class="maint-icon">&#128736;</div>' +
+        "<h1>Mantenimiento</h1>" +
+        '<p class="maint-msg">' + escapeHtml(msg) + "</p>" +
+        (m.locked
+          ? '<form id="maint-form" autocomplete="off">' +
+              '<input id="maint-pass" name="maintpass" type="password" placeholder="Contraseña de acceso" autocomplete="current-password" />' +
+              '<button class="btn btn-primary" type="submit">Entrar</button>' +
+            "</form>"
+          : '<button class="btn btn-primary" id="maint-enter">Entrar</button>') +
+        '<div class="maint-error">' + escapeHtml(maintError) + "</div>" +
+        '<button class="btn small" id="maint-logout">Cerrar sesión</button>' +
+      "</div></div>";
+
+    function approve() {
+      maintError = "";
+      maintMark(m);
+      maintGateState = false;
+      renderGame();
+    }
+
+    function fail(text) {
+      maintError = text;
+      renderMaintenance();
+    }
+
+    if (m.locked) {
+      var form = document.getElementById("maint-form");
+      if (form) {
+        form.addEventListener("submit", function (event) {
+          if (event.preventDefault) event.preventDefault();
+          var input = document.getElementById("maint-pass");
+          var pass = input ? String(input.value || "") : "";
+          if (!pass) {
+            fail("Escribe la contraseña de acceso.");
+            return;
+          }
+          if (maintBusy) return;
+          maintBusy = true;
+          api("/rest/v1/rpc/maintenance_enter", {
+            method: "POST",
+            token: session.token,
+            body: { p_password: pass },
+          })
+            .then(function (result) {
+              maintBusy = false;
+              if (result.ok && result.data === true) approve();
+              else if (result.ok) fail("Contraseña incorrecta.");
+              else fail(cloudErrorMessage(result));
+            })
+            .catch(function () {
+              maintBusy = false;
+              fail("No se pudo conectar. Inténtalo de nuevo.");
+            });
+        });
+      }
+    } else {
+      var enter = document.getElementById("maint-enter");
+      if (enter) enter.addEventListener("click", approve);
+    }
+
+    var out = document.getElementById("maint-logout");
+    if (out) out.addEventListener("click", logout);
+  }
+
   function renderGame() {
     if (!state) {
       renderAuth();
+      return;
+    }
+    if (maintenanceLocked()) {
+      renderMaintenance();
       return;
     }
     var race = RACES[state.race];

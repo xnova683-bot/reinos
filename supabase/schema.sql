@@ -43,9 +43,25 @@ create table if not exists public.world_settings (
   updated_at timestamptz not null default now()
 );
 
+alter table public.world_settings add column if not exists maintenance boolean not null default false;
+alter table public.world_settings add column if not exists maintenance_message text not null default '';
+alter table public.world_settings add column if not exists maintenance_version bigint not null default 0;
+
 insert into public.world_settings (id, map_image)
 values (1, null)
 on conflict (id) do nothing;
+
+create table if not exists public.world_maintenance (
+  id integer primary key default 1 check (id = 1),
+  password_hash text,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.world_maintenance (id, password_hash)
+values (1, null)
+on conflict (id) do nothing;
+
+alter table public.world_maintenance enable row level security;
 
 create table if not exists public.pvp_hits (
   attacker uuid not null references public.profiles (id) on delete cascade,
@@ -346,6 +362,15 @@ begin
       ) order by r.id)
       from public.regions r
     ), '[]'::jsonb),
+    'maintenance', coalesce((
+      select jsonb_build_object(
+        'active', coalesce(s.maintenance, false),
+        'message', coalesce(s.maintenance_message, ''),
+        'version', coalesce(s.maintenance_version, 0),
+        'locked', (select wm.password_hash is not null from public.world_maintenance wm where wm.id = 1)
+      )
+      from public.world_settings s where s.id = 1
+    ), '{"active":false}'::jsonb),
     'settings', coalesce((
       select jsonb_build_object('map', coalesce(s.map_image, ''))
       from public.world_settings s where s.id = 1
@@ -663,6 +688,59 @@ begin
   return jsonb_build_object('ok', true);
 end;
 $fn$;
+
+create or replace function public.admin_set_maintenance(p_active boolean, p_message text, p_password text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+
+  update public.world_settings
+    set maintenance = coalesce(p_active, false),
+        maintenance_message = coalesce(p_message, ''),
+        maintenance_version = (extract(epoch from clock_timestamp()) * 1000)::bigint,
+        updated_at = now()
+  where id = 1;
+
+  if p_password is null or p_password = '' then
+    update public.world_maintenance set password_hash = null, updated_at = now() where id = 1;
+  else
+    insert into public.world_maintenance (id, password_hash, updated_at)
+    values (1, extensions.crypt(p_password, extensions.gen_salt('bf')), now())
+    on conflict (id) do update
+      set password_hash = excluded.password_hash,
+          updated_at = now();
+  end if;
+
+  return jsonb_build_object('ok', true);
+end;
+$fn$;
+
+create or replace function public.maintenance_enter(p_password text)
+returns boolean
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  active boolean := false;
+  hash text;
+begin
+  select coalesce(maintenance, false) into active from public.world_settings where id = 1;
+  if not active then return true; end if;
+
+  select password_hash into hash from public.world_maintenance where id = 1;
+  if hash is null then return true; end if;
+
+  return extensions.crypt(coalesce(p_password, ''), hash) = hash;
+end;
+$fn$;
+
+grant execute on function public.admin_set_maintenance(boolean, text, text) to authenticated;
+grant execute on function public.maintenance_enter(text) to authenticated;
 
 grant execute on function public.admin_move_region(integer, numeric, numeric) to authenticated;
 grant execute on function public.admin_move_village(uuid, numeric, numeric) to authenticated;

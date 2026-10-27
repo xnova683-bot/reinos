@@ -1106,6 +1106,10 @@ input {
   color: var(--gold);
 }
 
+.admin-hint .btn {
+  margin-left: 0.5rem;
+}
+
 .map-legend .dot.open { background: #4caf72; }
 .map-legend .dot.locked { background: #6a6a7a; }
 
@@ -1217,6 +1221,23 @@ input {
 
 .road-link {
   stroke-width: 3.1;
+}
+
+.road-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 24;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.worldmap.editing .road-hit {
+  pointer-events: stroke;
+  cursor: grab;
+}
+
+.worldmap.editing .road-hit:active {
+  cursor: grabbing;
 }
 
 .worldmap.labels .road {

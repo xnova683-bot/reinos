@@ -53,6 +53,20 @@ insert into public.world_settings (id, map_image)
 values (1, null)
 on conflict (id) do nothing;
 
+create table if not exists public.road_bends (
+  id bigserial primary key,
+  region_id integer not null references public.regions (id) on delete cascade,
+  road_key text not null,
+  t numeric not null check (t > 0.1 and t < 0.9),
+  x numeric not null check (x >= 0 and x <= 1),
+  y numeric not null check (y >= 0 and y <= 1),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (region_id, road_key)
+);
+
+alter table public.road_bends enable row level security;
+
 create table if not exists public.world_maintenance (
   id integer primary key default 1 check (id = 1),
   password_hash text,
@@ -533,6 +547,13 @@ begin
       )
       from public.world_settings s where s.id = 1
     ), '{"active":false}'::jsonb),
+    'road_bends', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'region', b.region_id, 'key', b.road_key,
+        't', b.t, 'x', b.x, 'y', b.y
+      ) order by b.id)
+      from public.road_bends b
+    ), '[]'::jsonb),
     'settings', coalesce((
       select jsonb_build_object('map', coalesce(s.map_image, ''))
       from public.world_settings s where s.id = 1
@@ -1424,6 +1445,63 @@ end;
 $fn$;
 
 grant execute on function public.admin_move_village(uuid, numeric, numeric) to authenticated;
+
+create or replace function public.admin_save_road_bend(
+  p_region integer,
+  p_key text,
+  p_t numeric,
+  p_x numeric,
+  p_y numeric
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_t numeric := least(0.88, greatest(0.12, coalesce(p_t, 0.5)));
+  v_x numeric := least(0.995, greatest(0.005, coalesce(p_x, 0.5)));
+  v_y numeric := least(0.995, greatest(0.005, coalesce(p_y, 0.5)));
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+  if p_key is null or length(btrim(p_key)) = 0 or length(p_key) > 400 then
+    raise exception 'invalid road';
+  end if;
+  if not exists (select 1 from public.regions r where r.id = p_region) then
+    raise exception 'region not found';
+  end if;
+
+  insert into public.road_bends (region_id, road_key, t, x, y)
+    values (p_region, p_key, v_t, v_x, v_y)
+  on conflict (region_id, road_key) do update
+    set t = excluded.t,
+        x = excluded.x,
+        y = excluded.y,
+        updated_at = now();
+
+  return jsonb_build_object('ok', true);
+end;
+$fn$;
+
+grant execute on function public.admin_save_road_bend(integer, text, numeric, numeric, numeric) to authenticated;
+
+create or replace function public.admin_clear_road_bends(p_region integer)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  removed integer;
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+  delete from public.road_bends where region_id = p_region;
+  get diagnostics removed = row_count;
+  return jsonb_build_object('ok', true, 'removed', removed);
+end;
+$fn$;
+
+grant execute on function public.admin_clear_road_bends(integer) to authenticated;
 
 create or replace function public.admin_set_region_locked(rid integer, is_locked boolean)
 returns jsonb

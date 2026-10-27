@@ -1387,7 +1387,7 @@
 
   var world = {
     players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0,
-    settings: {}, maintenance: {}, me: {}, at: 0, error: "",
+    roadBends: [], settings: {}, maintenance: {}, me: {}, at: 0, error: "",
   };
   var worldTimer = null;
   var market = { orders: [], error: "", at: 0 };
@@ -1407,6 +1407,10 @@
   var mapFitScale = 1;
   var openRegionId = null;
   var mapFocusedRegion = null;
+  var currentRoadNetwork = null;
+  var currentRoadPoints = null;
+  var currentRoadBends = {};
+  var currentRoadRegionId = null;
   var regionHintId = null;
   var regionPressTimer = null;
   var regionLongPressed = false;
@@ -1439,6 +1443,7 @@
         world.phones = Array.isArray(data.phones) ? data.phones : [];
         world.npcs = Array.isArray(data.npcs) ? data.npcs : [];
         world.castles = Array.isArray(data.castles) ? data.castles : [];
+        world.roadBends = Array.isArray(data.road_bends) ? data.road_bends : [];
         world.online = Number(data.online || 0);
         world.speed = Number(data.speed || 1);
         if (state) state.speed = world.speed;
@@ -1545,7 +1550,7 @@
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
-    world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
+    world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0, roadBends: [], settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
     market = { orders: [], error: "", at: 0 };
     marketMsg = null;
     pvpTarget = null;
@@ -1903,6 +1908,42 @@
     return loops;
   }
 
+  function roadPointKey(point) {
+    if (point && point.key) return String(point.key);
+    return "at:" + Number(point.x).toFixed(5) + ":" + Number(point.y).toFixed(5);
+  }
+
+  function roadPairKey(prefix, a, b) {
+    var ka = roadPointKey(a);
+    var kb = roadPointKey(b);
+    return prefix + (ka < kb ? ka + "|" + kb : kb + "|" + ka);
+  }
+
+  function roadEdgeKey(a, b) {
+    return roadPairKey("e:", a, b);
+  }
+
+  function roadLinkKey(a, b) {
+    return roadPairKey("x:", a, b);
+  }
+
+  function roadStoredT(from, to, t) {
+    var value = clamp(Number(t), 0.12, 0.88);
+    return roadPointKey(from) > roadPointKey(to) ? 1 - value : value;
+  }
+
+  function roadBendAt(bends, key, from, to) {
+    var bend = bends && bends[key];
+    if (!bend) return null;
+    var x = Number(bend.x);
+    var y = Number(bend.y);
+    var t = Number(bend.t);
+    if (!isFinite(x) || !isFinite(y)) return null;
+    if (!isFinite(t)) t = 0.5;
+    if (roadPointKey(from) > roadPointKey(to)) t = 1 - t;
+    return { t: clamp(t, 0.1, 0.9), x: x, y: y };
+  }
+
   function roadControls(points, index) {
     var n = points.length;
     var p0 = points[(index - 1 + n) % n];
@@ -1923,29 +1964,65 @@
     };
   }
 
-  function roadLoopGeometry(points) {
+  function roadApplyBend(a, c1, c2, b, bend) {
+    if (!bend) return { c1: c1, c2: c2 };
+    var t = bend.t;
+    var m = 1 - t;
+    var bx = m * m * m * a.x + 3 * m * m * t * c1.x + 3 * m * t * t * c2.x + t * t * t * b.x;
+    var by = m * m * m * a.y + 3 * m * m * t * c1.y + 3 * m * t * t * c2.y + t * t * t * b.y;
+    var weight = 3 * m * t;
+    if (weight < 1e-6) return { c1: c1, c2: c2 };
+    var dx = (bend.x - bx) / weight;
+    var dy = (bend.y - by) / weight;
+    return {
+      c1: { x: clamp(c1.x + dx, 0, 1), y: clamp(c1.y + dy, 0, 1) },
+      c2: { x: clamp(c2.x + dx, 0, 1), y: clamp(c2.y + dy, 0, 1) },
+    };
+  }
+
+  function roadCurvePoint(segment, t) {
+    var m = 1 - t;
+    return {
+      x: m * m * m * segment.a.x + 3 * m * m * t * segment.c1.x +
+        3 * m * t * t * segment.c2.x + t * t * t * segment.b.x,
+      y: m * m * m * segment.a.y + 3 * m * m * t * segment.c1.y +
+        3 * m * t * t * segment.c2.y + t * t * t * segment.b.y,
+    };
+  }
+
+  function roadSegment(a, c1, c2, b, key, bend) {
+    var controls = roadApplyBend(a, c1, c2, b, bend);
+    var segment = { a: a, b: b, c1: controls.c1, c2: controls.c2, key: key };
+    segment.mid = roadCurvePoint(segment, 0.5);
+    segment.d =
+      "M" + (a.x * 100).toFixed(3) + " " + (a.y * 100).toFixed(3) +
+      " C" + (segment.c1.x * 100).toFixed(3) + " " + (segment.c1.y * 100).toFixed(3) +
+      " " + (segment.c2.x * 100).toFixed(3) + " " + (segment.c2.y * 100).toFixed(3) +
+      " " + (b.x * 100).toFixed(3) + " " + (b.y * 100).toFixed(3);
+    return segment;
+  }
+
+  function roadLoopGeometry(points, bends) {
     var parts = [];
+    var segments = [];
     var mids = [];
     for (var i = 0; i < points.length; i++) {
       var q = roadControls(points, i);
-      parts.push(
-        "C" + (q.c1.x * 100).toFixed(3) + " " + (q.c1.y * 100).toFixed(3) +
-        " " + (q.c2.x * 100).toFixed(3) + " " + (q.c2.y * 100).toFixed(3) +
-        " " + (q.p2.x * 100).toFixed(3) + " " + (q.p2.y * 100).toFixed(3)
-      );
-      mids.push({
-        x: clamp((q.p1.x + 3 * q.c1.x + 3 * q.c2.x + q.p2.x) / 8, 0, 1),
-        y: clamp((q.p1.y + 3 * q.c1.y + 3 * q.c2.y + q.p2.y) / 8, 0, 1),
-      });
+      var key = roadEdgeKey(q.p1, q.p2);
+      var segment = roadSegment(q.p1, q.c1, q.c2, q.p2, key, roadBendAt(bends, key, q.p1, q.p2));
+      segments.push(segment);
+      parts.push(segment.d.slice(segment.d.indexOf("C")));
+      mids.push({ x: segment.mid.x, y: segment.mid.y, key: key });
     }
     return {
       d: "M" + (points[0].x * 100).toFixed(3) + " " + (points[0].y * 100).toFixed(3) +
         " " + parts.join(" ") + " Z",
       mids: mids,
+      segments: segments,
     };
   }
 
-  function roadLinkPathD(a, b, seed) {
+  function roadLinkGeometry(a, b, seed, bends) {
     var ax = a.x * MAP_W;
     var ay = a.y * MAP_H;
     var bx = b.x * MAP_W;
@@ -1953,20 +2030,26 @@
     var dx = bx - ax;
     var dy = by - ay;
     var len = Math.hypot(dx, dy);
-    if (len < 1) return "";
+    if (len < 1) return null;
     var nx = -dy / len;
     var ny = dx / len;
     var hashed = Math.sin((seed + 1) * 12.9898) * 43758.5453;
     var sign = hashed - Math.floor(hashed) >= 0.5 ? 1 : -1;
     var bend = Math.min(130, Math.max(12, len * 0.14)) * sign;
-    var cx = (ax + bx) / 2 + nx * bend;
-    var cy = (ay + by) / 2 + ny * bend;
-    return (
-      "M" + (a.x * 100).toFixed(3) + " " + (a.y * 100).toFixed(3) +
-      " Q" + (clamp(cx / MAP_W, 0, 1) * 100).toFixed(3) + " " +
-      (clamp(cy / MAP_H, 0, 1) * 100).toFixed(3) + " " +
-      (b.x * 100).toFixed(3) + " " + (b.y * 100).toFixed(3)
+    var cx = clamp((ax + bx) / 2 + nx * bend, 0, MAP_W);
+    var cy = clamp((ay + by) / 2 + ny * bend, 0, MAP_H);
+    var qx = cx / MAP_W;
+    var qy = cy / MAP_H;
+    var key = roadLinkKey(a, b);
+    var segment = roadSegment(
+      a,
+      { x: a.x + (qx - a.x) * 2 / 3, y: a.y + (qy - a.y) * 2 / 3 },
+      { x: b.x + (qx - b.x) * 2 / 3, y: b.y + (qy - b.y) * 2 / 3 },
+      b,
+      key,
+      roadBendAt(bends, key, a, b)
     );
+    return { d: segment.d, segments: [segment], mid: segment.mid };
   }
 
   function roadLinkPairs(loops, geometries) {
@@ -2046,34 +2129,148 @@
     return links;
   }
 
-  function automaticRoadsSvg(points) {
-    if (!points || points.length < 3) return "";
+  function roadNetwork(points, bends) {
+    if (!points || points.length < 3) return { svg: "", segments: [] };
     var loops = roadLoops(points);
-    if (!loops.length) return "";
-    var geometries = loops.map(roadLoopGeometry);
+    if (!loops.length) return { svg: "", segments: [] };
+    var geometries = loops.map(function (loop) {
+      return roadLoopGeometry(loop, bends);
+    });
     var casings = [];
     var surfaces = [];
+    var hits = [];
+    var segments = [];
+
     loops.forEach(function (loop, index) {
-      casings.push('<path class="road-casing" d="' + geometries[index].d + '"></path>');
+      var geometry = geometries[index];
+      casings.push('<path class="road-casing" d="' + geometry.d + '"></path>');
       surfaces.push(
-        '<path class="road" data-road-loop="' + index + '" d="' + geometries[index].d + '"></path>'
+        '<path class="road" data-road-loop="' + index + '" d="' + geometry.d + '"></path>'
       );
+      geometry.segments.forEach(function (segment) {
+        segments.push(segment);
+        hits.push('<path class="road-hit" data-road-key="' + escapeHtml(segment.key) + '" d="' + segment.d + '"></path>');
+      });
     });
+
     roadLinkPairs(loops, geometries).forEach(function (link) {
-      var d = roadLinkPathD(link.a, link.b, link.seed);
-      if (!d) return;
-      casings.push('<path class="road-casing" d="' + d + '"></path>');
-      surfaces.push('<path class="road road-link" d="' + d + '"></path>');
+      var geometry = roadLinkGeometry(link.a, link.b, link.seed, bends);
+      if (!geometry) return;
+      casings.push('<path class="road-casing" d="' + geometry.d + '"></path>');
+      surfaces.push('<path class="road road-link" d="' + geometry.d + '"></path>');
+      geometry.segments.forEach(function (segment) {
+        segments.push(segment);
+        hits.push('<path class="road-hit" data-road-key="' + escapeHtml(segment.key) + '" d="' + segment.d + '"></path>');
+      });
     });
-    return (
-      '<svg class="road-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
-        casings.join("") + surfaces.join("") +
-      "</svg>"
-    );
+
+    return {
+      segments: segments,
+      svg:
+        '<svg class="road-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
+          casings.join("") + surfaces.join("") + hits.join("") +
+        "</svg>",
+    };
+  }
+
+  function automaticRoadsSvg(points, bends) {
+    return roadNetwork(points, bends).svg;
+  }
+
+  function roadBendsForRegion(regionId) {
+    var bends = {};
+    (world.roadBends || []).forEach(function (bend) {
+      if (String(bend.region) === String(regionId)) {
+        bends[String(bend.key)] = {
+          t: Number(bend.t),
+          x: Number(bend.x),
+          y: Number(bend.y),
+        };
+      }
+    });
+    return bends;
+  }
+
+  function roadNearestT(segment, point) {
+    var best = 0.5;
+    var bestDist = Infinity;
+    for (var i = 0; i <= 24; i++) {
+      var t = i / 24;
+      var dist = roadDistanceSq(roadCurvePoint(segment, t), point);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = t;
+      }
+    }
+    return clamp(best, 0.12, 0.88);
+  }
+
+  function copyRoadBends(bends) {
+    var copy = {};
+    Object.keys(bends || {}).forEach(function (key) {
+      copy[key] = { t: bends[key].t, x: bends[key].x, y: bends[key].y };
+    });
+    return copy;
+  }
+
+  function replaceRoadSvg(svg) {
+    if (!mapStageEl || !mapStageEl.querySelector) return;
+    var current = mapStageEl.querySelector(".road-svg");
+    if (current) current.outerHTML = svg;
+  }
+
+  function previewRoadDrag(road) {
+    if (!currentRoadPoints || !road || !road.target) return;
+    var bends = copyRoadBends(currentRoadBends);
+    bends[road.key] = { t: road.t, x: road.target.x, y: road.target.y };
+    replaceRoadSvg(roadNetwork(currentRoadPoints, bends).svg);
   }
 
   function mapImageUrl() {
     return (world.settings && world.settings.map) || "./assets/map.jpg";
+  }
+
+  function saveRoadBend(regionId, key, t, x, y) {
+    if (!isCloud() || !session.isAdmin) return Promise.resolve();
+    pvpResult = null;
+    if (String(regionId) === String(currentRoadRegionId)) {
+      currentRoadBends[key] = { t: t, x: x, y: y };
+    }
+    return api("/rest/v1/rpc/admin_save_road_bend", {
+      method: "POST",
+      token: session.token,
+      body: { p_region: Number(regionId), p_key: key, p_t: t, p_x: x, p_y: y },
+    }).then(function (result) {
+      if (!result.ok) {
+        pvpResult = { ok: false, text: "No se pudo ajustar el camino: " + cloudErrorMessage(result) };
+        renderGame();
+        return;
+      }
+      return syncWorld().then(function () { renderGame(); });
+    }).catch(function () {
+      pvpResult = { ok: false, text: "No se pudo guardar el ajuste del camino." };
+      renderGame();
+    });
+  }
+
+  function clearRoadBends(regionId) {
+    if (!isCloud() || !session.isAdmin) return Promise.resolve();
+    pvpResult = null;
+    return api("/rest/v1/rpc/admin_clear_road_bends", {
+      method: "POST",
+      token: session.token,
+      body: { p_region: Number(regionId) },
+    }).then(function (result) {
+      if (!result.ok) {
+        pvpResult = { ok: false, text: "No se pudieron restaurar los caminos: " + cloudErrorMessage(result) };
+        renderGame();
+        return;
+      }
+      return syncWorld().then(function () { renderGame(); });
+    }).catch(function () {
+      pvpResult = { ok: false, text: "No se pudieron restaurar los caminos." };
+      renderGame();
+    });
   }
 
   function adminAction(fn, body) {
@@ -2290,6 +2487,10 @@
   }
 
   function mapView() {
+    currentRoadNetwork = null;
+    currentRoadPoints = null;
+    currentRoadBends = {};
+    currentRoadRegionId = null;
     var power = armyPower(state);
     var open = openRegionId ? regionById(openRegionId) : null;
     if (openRegionId && !open) openRegionId = null;
@@ -2354,21 +2555,25 @@
           typeof npc.x === "number" && typeof npc.y === "number";
       });
       var points = players.map(function (player) {
-        return { x: Number(player.x), y: Number(player.y) };
+        return { x: Number(player.x), y: Number(player.y), key: "p:" + player.id };
       });
       npcs.forEach(function (npc) {
-        points.push({ x: Number(npc.x), y: Number(npc.y) });
+        points.push({ x: Number(npc.x), y: Number(npc.y), key: "n:" + npc.id });
       });
       var castle = castleOf(open.id);
       if (castle && typeof castle.x === "number" && typeof castle.y === "number") {
-        points.push({ x: Number(castle.x), y: Number(castle.y) });
+        points.push({ x: Number(castle.x), y: Number(castle.y), key: "c:" + castle.id });
       }
       var mineHere =
         !!meMarker &&
         (String(session.region) === String(open.id) || pointInRegion(open, mePos));
-      if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y) });
+      if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y), key: "s:" + session.userId });
 
-      layer = automaticRoadsSvg(points) + (castle
+      currentRoadBends = roadBendsForRegion(open.id);
+      currentRoadPoints = points;
+      currentRoadRegionId = open.id;
+      currentRoadNetwork = roadNetwork(points, currentRoadBends);
+      layer = currentRoadNetwork.svg + (castle
         ? '<button class="marker castle" data-map-castle="' + escapeHtml(castle.id) + '" ' +
             'data-mx="' + castle.x + '" data-my="' + castle.y + '" ' +
             'title="' + escapeHtml(castle.name) + (castle.owner ? " · Rey " + escapeHtml(castle.owner_name) : " · Sin rey") + '" ' +
@@ -2429,7 +2634,12 @@
               })
               .join("") +
           "</div>" +
-          (adminMode ? '<div class="admin-hint">En el mundo arrastra puntos de región; dentro de una región arrastra sus aldeas, NPCs y castillo por todo el mapa.</div>' : "") +
+          (adminMode
+            ? '<div class="admin-hint">En el mundo arrastra puntos de región; dentro de una región arrastra sus aldeas, NPCs y castillo por todo el mapa.' +
+                (open ? ' También puedes arrastrar la línea de un camino para curvarlo.' +
+                  '<button class="btn small" id="reset-roads-btn">Restaurar caminos</button>' : "") +
+              "</div>"
+            : "") +
         "</div>";
     }
 
@@ -2794,6 +3004,24 @@
           beginItemDrag("village", session.userId, ownVillage, event);
           return;
         }
+        var roadHit = target && target.closest ? target.closest("[data-road-key]") : null;
+        if (roadHit && currentRoadNetwork && currentRoadRegionId) {
+          var roadKey = roadHit.getAttribute("data-road-key");
+          var segment = null;
+          currentRoadNetwork.segments.forEach(function (candidate) {
+            if (!segment && candidate.key === roadKey) segment = candidate;
+          });
+          var mapPoint = mapFraction(event.clientX, event.clientY);
+          beginItemDrag("road", roadKey, null, event);
+          itemDrag.road = {
+            key: roadKey,
+            region: currentRoadRegionId,
+            segment: segment,
+            t: segment && mapPoint ? roadNearestT(segment, mapPoint) : 0.5,
+            target: mapPoint || { x: 0.5, y: 0.5 },
+          };
+          return;
+        }
       }
       pointers[event.pointerId] = { x: event.clientX, y: event.clientY };
       if (pointerList().length === 1) {
@@ -2813,6 +3041,17 @@
     mapWrapEl.addEventListener("pointermove", function (event) {
       if (itemDrag) {
         if (event.pointerId !== itemDrag.pointerId) return;
+        if (itemDrag.kind === "road" && itemDrag.road) {
+          var roadPoint = mapFraction(event.clientX, event.clientY);
+          if (roadPoint) {
+            itemDrag.road.target = {
+              x: clamp(roadPoint.x, 0.005, 0.995),
+              y: clamp(roadPoint.y, 0.005, 0.995),
+            };
+            previewRoadDrag(itemDrag.road);
+          }
+          return;
+        }
         var px = event.clientX - itemDrag.x;
         var py = event.clientY - itemDrag.y;
         if (itemDrag.node && itemDrag.node.style) {
@@ -2854,6 +3093,35 @@
         if (drag.node && drag.node.style) drag.node.style.transform = "";
         if (mapWrapEl.releasePointerCapture) {
           try { mapWrapEl.releasePointerCapture(event.pointerId); } catch (err) {}
+        }
+        if (drag.kind === "road" && drag.road) {
+          if (event.type === "pointercancel") {
+            if (currentRoadNetwork) replaceRoadSvg(currentRoadNetwork.svg);
+            return;
+          }
+          var roadMoved = Math.abs(event.clientX - drag.x) + Math.abs(event.clientY - drag.y);
+          var releasePoint = mapFraction(event.clientX, event.clientY);
+          if (roadMoved <= 4 || !releasePoint) {
+            if (currentRoadNetwork) replaceRoadSvg(currentRoadNetwork.svg);
+            return;
+          }
+          var releaseTarget = {
+            x: clamp(releasePoint.x, 0.005, 0.995),
+            y: clamp(releasePoint.y, 0.005, 0.995),
+          };
+          drag.road.target = releaseTarget;
+          previewRoadDrag(drag.road);
+          var storedT = drag.road.segment
+            ? roadStoredT(drag.road.segment.a, drag.road.segment.b, drag.road.t)
+            : drag.road.t;
+          saveRoadBend(
+            drag.road.region,
+            drag.road.key,
+            storedT,
+            releaseTarget.x,
+            releaseTarget.y
+          );
+          return;
         }
         if (event.type === "pointercancel") return;
         var dx = (event.clientX - drag.x) / (MAP_W * mapTransform.scale);
@@ -3073,6 +3341,10 @@
       var url = window.prompt("URL de la nueva imagen del mapa (vacío = imagen por defecto)", mapImageUrl());
       if (url === null) return;
       adminAction("admin_set_map_image", { url: url });
+    });
+    var resetRoadsBtn = document.getElementById("reset-roads-btn");
+    if (resetRoadsBtn) resetRoadsBtn.addEventListener("click", function () {
+      if (openRegionId) clearRoadBends(openRegionId);
     });
     Array.prototype.forEach.call(app.querySelectorAll("[data-lock-region]"), function (button) {
       button.addEventListener("click", function () {

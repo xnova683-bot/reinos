@@ -1888,14 +1888,152 @@
       paths += '<path class="road draft" id="road-draft-path" d="' + roadPathD(draft.points) + '"></path>';
       handles = draft.points.map(function (pt, index) {
         var p = roadXY(pt);
-        return '<circle class="road-handle" data-road-handle="' + index + '" cx="' +
-          (p.x * 100).toFixed(3) + '" cy="' + (p.y * 100).toFixed(3) + '" r="1.4"></circle>';
+        var locked = !draft.id && draft.start && index === 0;
+        return '<circle class="road-handle' + (locked ? " locked" : "") + '"' +
+          (locked ? "" : ' data-road-handle="' + index + '"') +
+          ' cx="' + (p.x * 100).toFixed(3) + '" cy="' + (p.y * 100).toFixed(3) + '" r="1.4"></circle>';
       }).join("");
     }
     return (
       '<svg class="road-svg' + (draft ? " road-editing" : "") + '" viewBox="0 0 100 100" ' +
         'preserveAspectRatio="none" aria-hidden="true">' + paths + handles + "</svg>"
     );
+  }
+
+  function roadsOfRegion(regionId) {
+    return world.roads.filter(function (road) {
+      return String(road.region) === String(regionId);
+    });
+  }
+
+  function roadPixelDistance(ax, ay, bx, by) {
+    var scale = mapTransform.scale || 1;
+    return Math.hypot((ax - bx) * MAP_W * scale, (ay - by) * MAP_H * scale);
+  }
+
+  function roadNearestOnSegment(px, py, ax, ay, bx, by) {
+    var dx = bx - ax;
+    var dy = by - ay;
+    var len = dx * dx + dy * dy;
+    var t = len ? ((px - ax) * dx + (py - ay) * dy) / len : 0;
+    t = clamp(t, 0, 1);
+    return { x: ax + dx * t, y: ay + dy * t };
+  }
+
+  function roadVillageCandidates(draft) {
+    var list = [];
+    var region = regionById(draft.region);
+    function add(id, name, x, y) {
+      if (typeof x !== "number" || typeof y !== "number" || !isFinite(x) || !isFinite(y)) return;
+      if (draft.start && String(draft.start.id) === String(id)) return;
+      list.push({ kind: "village", id: id, name: name || "una aldea", x: x, y: y });
+    }
+    world.players.forEach(function (player) {
+      if (String(player.region) !== String(draft.region)) return;
+      add(player.id, player.name, Number(player.x), Number(player.y));
+    });
+    world.npcs.forEach(function (npc) {
+      if (String(npc.region) !== String(draft.region)) return;
+      add(npc.id, npc.name, Number(npc.x), Number(npc.y));
+    });
+    if (session && session.village &&
+        (!region || String(session.region) === String(draft.region) || pointInRegion(region, session.village))) {
+      add(session.userId, session.username, Number(session.village.x), Number(session.village.y));
+    }
+    return list;
+  }
+
+  function roadSnap(point, draft) {
+    if (!draft || !point) return null;
+    var candidates = roadVillageCandidates(draft);
+    roadsOfRegion(draft.region).forEach(function (road) {
+      if (draft.id && String(road.id) === String(draft.id)) return;
+      var pts = (road.points || []).map(roadXY);
+      for (var i = 0; i < pts.length - 1; i++) {
+        var near = roadNearestOnSegment(point.x, point.y, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
+        candidates.push({ kind: "road", id: road.id, name: "otro camino", x: near.x, y: near.y });
+      }
+    });
+    var region = regionById(draft.region);
+    if (region && Array.isArray(region.points) && region.points.length >= 2) {
+      var edge = region.points.map(roadXY);
+      for (var i = 0; i < edge.length; i++) {
+        var next = edge[(i + 1) % edge.length];
+        var border = roadNearestOnSegment(point.x, point.y, edge[i].x, edge[i].y, next.x, next.y);
+        candidates.push({ kind: "region", name: "el borde de " + region.name, x: border.x, y: border.y });
+      }
+    }
+    var priority = { village: 0, road: 1, region: 2 };
+    var best = null;
+    var bestDist = Infinity;
+    candidates.forEach(function (candidate) {
+      var dist = roadPixelDistance(point.x, point.y, candidate.x, candidate.y);
+      if (dist < bestDist - 0.5 ||
+          (Math.abs(dist - bestDist) <= 0.5 && best &&
+           priority[candidate.kind] < priority[best.kind])) {
+        best = candidate;
+        bestDist = dist;
+      }
+    });
+    if (!best || bestDist > 26) return null;
+    return {
+      kind: best.kind,
+      id: best.id,
+      name: best.name,
+      point: { x: clamp(best.x, 0, 1), y: clamp(best.y, 0, 1) },
+    };
+  }
+
+  function roadConnection(draft) {
+    if (!draft || draft.points.length < 2) return null;
+    return roadSnap(draft.points[draft.points.length - 1], draft);
+  }
+
+  function roadVillageFromNode(node) {
+    if (!node || !node.getAttribute) return null;
+    var playerId = node.getAttribute("data-map-player");
+    var npcId = node.getAttribute("data-map-npc");
+    var own = node.getAttribute("data-map-village");
+    var id = playerId || npcId || (own ? session && session.userId : "");
+    if (!id) return null;
+    var name = "";
+    if (playerId) {
+      world.players.forEach(function (player) { if (String(player.id) === String(playerId)) name = player.name; });
+    } else if (npcId) {
+      world.npcs.forEach(function (npc) { if (String(npc.id) === String(npcId)) name = npc.name; });
+    } else {
+      name = (session && session.username) || "Tu aldea";
+    }
+    if (!name && node.getAttribute("title")) name = String(node.getAttribute("title")).split(" · ")[0];
+    var x = Number(node.getAttribute("data-mx"));
+    var y = Number(node.getAttribute("data-my"));
+    if (!isFinite(x) || !isFinite(y)) return null;
+    return { id: id, name: name || "una aldea", x: x, y: y };
+  }
+
+  function roadBeginAtVillage(village) {
+    roadDraft.start = { kind: "village", id: village.id, name: village.name };
+    roadDraft.points = [{ x: village.x, y: village.y }];
+    roadMsg = null;
+    renderGame();
+  }
+
+  function roadConnectVillage(village) {
+    if (!roadDraft || !village) return;
+    if (roadDraft.start && String(roadDraft.start.id) === String(village.id)) return;
+    if (roadConnection(roadDraft)) return;
+    roadDraft.points.push({ x: village.x, y: village.y });
+    roadMsg = null;
+    renderGame();
+  }
+
+  function roadTouchVillage(node) {
+    if (!roadMode || !roadDraft || roadDraft.id || !session || !session.isAdmin) return false;
+    var village = roadVillageFromNode(node);
+    if (!village) return false;
+    if (!roadDraft.points.length) roadBeginAtVillage(village);
+    else roadConnectVillage(village);
+    return true;
   }
 
   function mapImageUrl() {
@@ -1965,7 +2103,7 @@
   function roadStartNew() {
     if (!session || !session.isAdmin || !openRegionId) return;
     roadMode = true;
-    roadDraft = { id: null, region: openRegionId, points: [] };
+    roadDraft = { id: null, region: Number(openRegionId), points: [], start: null };
     roadMsg = null;
     renderGame();
   }
@@ -1980,6 +2118,7 @@
       id: road.id,
       region: Number(road.region),
       points: (road.points || []).map(roadXY),
+      start: null,
     };
     roadMsg = null;
     renderGame();
@@ -1995,6 +2134,7 @@
   function roadUndo() {
     if (!roadDraft || !roadDraft.points.length) return;
     roadDraft.points.pop();
+    if (!roadDraft.points.length) roadDraft.start = null;
     roadMsg = null;
     renderGame();
   }
@@ -2002,9 +2142,18 @@
   function roadSave() {
     if (roadBusy || !roadDraft || !session || !session.isAdmin) return;
     if (roadDraft.points.length < 2) {
-      roadMsg = { ok: false, text: "Añade al menos 2 puntos al camino." };
+      roadMsg = { ok: false, text: "Toca una aldea y añade al menos otro punto." };
       renderGame();
       return;
+    }
+    var link = roadDraft.id ? null : roadConnection(roadDraft);
+    if (!roadDraft.id && !link) {
+      roadMsg = { ok: false, text: "Enlaza el camino con otra aldea, otro camino o el borde de la región." };
+      renderGame();
+      return;
+    }
+    if (link) {
+      roadDraft.points[roadDraft.points.length - 1] = { x: link.point.x, y: link.point.y };
     }
     roadBusy = true;
     roadMsg = null;
@@ -2262,18 +2411,30 @@
           );
         }).join("")
       : '<div class="admin-hint">Esta región usa los caminos automáticos. Crea uno para dibujar tu propio trazado.</div>';
-    var tools = editing
-      ? '<div class="road-tools">' +
-          '<span class="hint">' +
-            (roadDraft.points.length
-              ? "Toca el mapa para añadir puntos y arrástralos para curvarlo."
-              : "Toca el mapa para colocar el primer punto.") +
-          "</span>" +
+    var tools = "";
+    if (editing) {
+      var link = !roadDraft.id ? roadConnection(roadDraft) : null;
+      var hint = "";
+      if (!roadDraft.id && !roadDraft.points.length) {
+        hint = "Toca una aldea para empezar el camino.";
+      } else if (!roadDraft.id && !link) {
+        hint = "Toca puntos en el mapa hasta enlazar con otra aldea, otro camino o el borde de la región.";
+      } else if (!roadDraft.id && link) {
+        hint = "Enlazado con " + link.name + ". Pulsa Aceptar.";
+      } else {
+        hint = "Arrastra los puntos para curvarlo y pulsa Guardar.";
+      }
+      var canSave = roadDraft.points.length >= 2 && (!!roadDraft.id || !!link);
+      tools =
+        '<div class="road-tools">' +
+          '<span class="hint">' + escapeHtml(hint) + "</span>" +
           '<button class="btn small" id="road-undo-btn"' + (roadDraft.points.length ? "" : " disabled") + ">Quitar punto</button>" +
           '<button class="btn small" id="road-cancel-btn">Cancelar</button>' +
-          '<button class="btn small" id="road-save-btn"' + (roadDraft.points.length < 2 ? " disabled" : "") + ">Guardar</button>" +
-        "</div>"
-      : "";
+          '<button class="btn small" id="road-save-btn"' + (canSave ? "" : " disabled") + ">" +
+            (roadDraft.id ? "Guardar" : "Aceptar") +
+          "</button>" +
+        "</div>";
+    }
     var msg = roadMsg
       ? '<div class="road-msg ' + (roadMsg.ok ? "ok" : "bad") + '">' + escapeHtml(roadMsg.text) + "</div>"
       : "";
@@ -2283,6 +2444,7 @@
           '<button class="btn small" id="road-new-btn"' + (roadBusy ? " disabled" : "") + ">Nuevo camino</button>" +
         "</div>" +
         '<div class="admin-road-list">' + list + "</div>" +
+        '<div class="admin-hint">Los caminos nuevos empiezan en una aldea y deben enlazar con otra aldea, otro camino o el borde de la región.</div>' +
         tools + msg +
       "</div>"
     );
@@ -2367,9 +2529,7 @@
         !!meMarker &&
         (String(session.region) === String(open.id) || pointInRegion(open, mePos));
       if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y) });
-      regionRoads = world.roads.filter(function (road) {
-        return String(road.region) === String(open.id);
-      });
+      regionRoads = roadsOfRegion(open.id);
       var draftHere =
         roadMode && roadDraft && String(roadDraft.region) === String(open.id) ? roadDraft : null;
       var roadsLayer = regionRoads.length || draftHere
@@ -2783,6 +2943,9 @@
         itemDrag.pointIndex = Number(handle.getAttribute("data-road-handle"));
         return;
       }
+      if (roadTouchVillage(target && target.closest
+        ? target.closest("[data-map-village],[data-map-player],[data-map-npc]")
+        : null)) return;
       if (adminMode && session && session.isAdmin) {
         var point = target && target.closest ? target.closest("[data-region-point]") : null;
         var marker = target && target.closest ? target.closest("[data-map-player]") : null;
@@ -2893,6 +3056,12 @@
             roadSkipClick = true;
             setTimeout(function () { roadSkipClick = false; }, 120);
           }
+          if (roadDraft && !roadDraft.id && roadDraft.points.length > 1) {
+            var endLink = roadConnection(roadDraft);
+            if (endLink) {
+              roadDraft.points[roadDraft.points.length - 1] = { x: endLink.point.x, y: endLink.point.y };
+            }
+          }
           renderGame();
           return;
         }
@@ -2946,9 +3115,16 @@
           target.closest("[data-region-point],[data-map-player],[data-map-npc],[data-map-castle],[data-map-village],[data-road-handle]")) {
         return;
       }
+      if (!roadDraft.points.length) {
+        roadMsg = { ok: false, text: "Toca una aldea para empezar el camino." };
+        renderGame();
+        return;
+      }
+      if (!roadDraft.id && roadConnection(roadDraft)) return;
       var fraction = mapFraction(event.clientX, event.clientY);
       if (!fraction) return;
-      roadDraft.points.push(fraction);
+      var snapped = roadSnap(fraction, roadDraft);
+      roadDraft.points.push(snapped ? snapped.point : fraction);
       roadMsg = null;
       renderGame();
     });
@@ -2956,7 +3132,8 @@
     Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-player]"), function (marker) {
       marker.addEventListener("click", function (event) {
         if (event.stopPropagation) event.stopPropagation();
-        if (adminMode) return;
+        if (roadTouchVillage(marker)) return;
+        if (adminMode || roadMode) return;
         var id = marker.getAttribute("data-map-player");
         pvpResult = null;
         npcTarget = null;
@@ -2971,7 +3148,8 @@
     Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-npc]"), function (marker) {
       marker.addEventListener("click", function (event) {
         if (event.stopPropagation) event.stopPropagation();
-        if (adminMode) return;
+        if (roadTouchVillage(marker)) return;
+        if (adminMode || roadMode) return;
         var id = marker.getAttribute("data-map-npc");
         pvpTarget = null;
         pvpResult = null;
@@ -2987,7 +3165,7 @@
     Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-castle]"), function (marker) {
       marker.addEventListener("click", function (event) {
         if (event.stopPropagation) event.stopPropagation();
-        if (adminMode) return;
+        if (adminMode || roadMode) return;
         var id = marker.getAttribute("data-map-castle");
         pvpTarget = null;
         npcTarget = null;

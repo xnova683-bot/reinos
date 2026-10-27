@@ -1233,6 +1233,11 @@ input {
   cursor: grabbing;
 }
 
+.road-handle.locked {
+  pointer-events: none;
+  fill: #d8bd52;
+}
+
 .admin-roads {
   margin-top: 0.6rem;
   border-top: 1px solid rgba(216, 189, 82, 0.25);

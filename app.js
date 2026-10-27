@@ -1420,17 +1420,17 @@
         world.me = data.me || {};
         world.at = now();
         world.error = "";
+        var wasAdmin = !!(session && session.isAdmin);
         if (session) {
           session.isAdmin = !!world.me.admin;
           session.region = world.me.region;
           writeJSON(SESSION_KEY, session);
         }
+        if (session && !!session.isAdmin !== wasAdmin) renderGame();
         var gate = maintenanceLocked();
         if (gate !== maintGateState) {
           maintGateState = gate;
           if (session) renderGame();
-        } else if (!gate && view === "mapa" && !adminMode) {
-          renderGame();
         }
       })
       .catch(function () {
@@ -1635,6 +1635,8 @@
           var adminError = String(cloudErrorMessage(result));
           if (adminError.indexOf("region locked") !== -1) {
             adminError = "Esa región está bloqueada: desbloquéala antes de mover aldeas allí.";
+          } else if (adminError.indexOf("password required") !== -1) {
+            adminError = "Escribe una contraseña para activar el mantenimiento.";
           }
           pvpResult = { ok: false, text: adminError };
           renderGame();
@@ -1775,6 +1777,7 @@
             '<button class="btn" id="maint-toggle">' +
               (world.maintenance && world.maintenance.active ? "Desactivar mantenimiento" : "Activar mantenimiento") +
             "</button>" +
+            '<div class="admin-maint-error" id="maint-error"></div>' +
           "</div>" +
           '<div class="admin-phones"><b>Jugadores registrados (' + world.phones.length + ")</b>" +
             (world.phones.length
@@ -2218,10 +2221,18 @@
       maintToggle.addEventListener("click", function () {
         var messageEl = document.getElementById("maint-message-input");
         var passwordEl = document.getElementById("maint-password-input");
+        var errorEl = document.getElementById("maint-error");
+        var active = !(world.maintenance && world.maintenance.active);
+        var password = passwordEl ? String(passwordEl.value || "") : "";
+        if (active && !password.trim()) {
+          if (errorEl) errorEl.textContent = "Escribe una contraseña para activar el mantenimiento.";
+          return;
+        }
+        if (errorEl) errorEl.textContent = "";
         adminAction("admin_set_maintenance", {
-          p_active: !(world.maintenance && world.maintenance.active),
+          p_active: active,
           p_message: messageEl ? messageEl.value : "",
-          p_password: passwordEl ? passwordEl.value : "",
+          p_password: password,
         });
       });
     }

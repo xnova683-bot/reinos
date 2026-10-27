@@ -703,6 +703,10 @@ as $fn$
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
 
+  if coalesce(p_active, false) and (p_password is null or p_password = '') then
+    raise exception 'password required';
+  end if;
+
   update public.world_settings
     set maintenance = coalesce(p_active, false),
         maintenance_message = coalesce(p_message, ''),

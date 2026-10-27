@@ -1292,6 +1292,12 @@ input {
   font-size: 0.82rem;
 }
 
+.admin-maint-error {
+  min-height: 1em;
+  color: #e08a8a;
+  font-size: 0.78rem;
+}
+
 .admin-maint-state {
   color: var(--text-sub);
 }

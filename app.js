@@ -332,6 +332,7 @@
       lastDaily: 0,
       buildQueue: [],
       trainQueue: [],
+      map: { camps: {}, village: null },
       log: [
         { t: t, text: "Se fundó tu aldea. La " + RACES[raceId].name + " domina estas tierras.", kind: "good" },
       ],
@@ -350,6 +351,8 @@
     s.lastDaily = Number(s.lastDaily || 0);
     s.buildQueue = Array.isArray(s.buildQueue) ? s.buildQueue : [];
     s.trainQueue = Array.isArray(s.trainQueue) ? s.trainQueue : [];
+    s.map = s.map && typeof s.map === "object" ? s.map : { camps: {}, village: null };
+    s.map.camps = s.map.camps && typeof s.map.camps === "object" ? s.map.camps : {};
     return s;
   }
 
@@ -1516,9 +1519,322 @@
     );
   }
 
-  function raceView() {
-    var race = RACES[state.race];
+  /* ---------------- world map ---------------- */
+
+  var MAP_IMAGE = "./assets/map.jpg";
+  var MAP_W = 450;
+  var MAP_H = 318;
+  var MAP_DEFAULTS = [
+    { x: 0.28, y: 0.3 },
+    { x: 0.66, y: 0.24 },
+    { x: 0.8, y: 0.5 },
+    { x: 0.2, y: 0.6 },
+    { x: 0.48, y: 0.78 },
+    { x: 0.84, y: 0.8 },
+    { x: 0.14, y: 0.4 },
+  ];
+  var MAP_VILLAGE = { x: 0.5, y: 0.46 };
+
+  var mapTransform = { x: 0, y: 0, scale: 1 };
+  var mapFitScale = 1;
+  var mapEdit = false;
+  var mapSelected = null;
+  var mapWrapEl = null;
+  var mapStageEl = null;
+
+  function campPosition(index) {
+    var saved = state.map && state.map.camps ? state.map.camps[index] : null;
+    if (saved && typeof saved.x === "number" && typeof saved.y === "number") return saved;
+    return MAP_DEFAULTS[index] || { x: 0.5, y: 0.5 };
+  }
+
+  function villagePosition() {
+    var saved = state.map ? state.map.village : null;
+    if (saved && typeof saved.x === "number" && typeof saved.y === "number") return saved;
+    return MAP_VILLAGE;
+  }
+
+  function mapView() {
+    var power = armyPower(state);
+    var markers = campList()
+      .map(function (camp) {
+        var pos = campPosition(camp.id);
+        var odds = Math.round(clamp((power / camp.power) * 100, 1, 99));
+        return (
+          '<button class="marker ' + camp.tier + '" data-map-camp="' + camp.id + '" ' +
+            'title="' + escapeHtml(camp.name) + ' · Poder ' + num(camp.power) + " · " + odds + '%" ' +
+            'style="left:' + (pos.x * 100).toFixed(2) + "%;top:" + (pos.y * 100).toFixed(2) + '%">' +
+            '<span class="mlabel">' + escapeHtml(camp.name) + "</span>" +
+            '<span class="pin"></span>' +
+          "</button>"
+        );
+      })
+      .join("");
+    var village = villagePosition();
+    var villageMarker =
+      '<div class="marker village" data-map-village="1" style="left:' +
+        (village.x * 100).toFixed(2) + "%;top:" + (village.y * 100).toFixed(2) + '%">' +
+        '<span class="mlabel">Tu aldea</span><span class="pin"></span>' +
+      "</div>";
+
     return (
+      '<div class="panel map-panel">' +
+        '<div class="panel-head"><h2>Mapa del mundo</h2>' +
+          '<span class="hint">Arrastra para explorar · rueda o pellizco para zoom</span></div>' +
+        '<div class="map-tools">' +
+          '<button class="btn" data-map-zoom="in" aria-label="Acercar">+</button>' +
+          '<button class="btn" data-map-zoom="out" aria-label="Alejar">−</button>' +
+          '<button class="btn" data-map-center="1">Centrar</button>' +
+          '<button class="btn' + (mapEdit ? " active" : "") + '" id="map-edit-btn">' +
+            (mapEdit ? "Terminar ajuste" : "Ajustar mapa") +
+          "</button>" +
+          '<span class="map-hint" id="map-hint">' +
+            (mapEdit
+              ? "Toca un marcador y luego el punto del mapa donde quieres colocarlo."
+              : "Toca un campamento para atacarlo.") +
+          "</span>" +
+        "</div>" +
+        '<div class="worldmap' + (mapEdit ? " editing" : "") + '" id="worldmap">' +
+          '<div class="worldmap-stage" id="worldmap-stage">' +
+            '<img src="' + MAP_IMAGE + '" alt="Mapa del mundo" draggable="false" />' +
+            villageMarker +
+            markers +
+          "</div>" +
+        "</div>" +
+        '<div class="map-legend">' +
+          '<span><i class="dot easy"></i>Fácil</span>' +
+          '<span><i class="dot mid"></i>Medio</span>' +
+          '<span><i class="dot hard"></i>Difícil</span>' +
+          '<span class="grow"></span><span class="hint">Poder: ' + num(power) + "</span>" +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  function clampMapPan() {
+    if (!mapWrapEl) return;
+    var w = mapWrapEl.clientWidth || 900;
+    var h = mapWrapEl.clientHeight || 480;
+    var sw = MAP_W * mapTransform.scale;
+    var sh = MAP_H * mapTransform.scale;
+    var minX = Math.min(0, w - sw);
+    var minY = Math.min(0, h - sh);
+    mapTransform.x = Math.max(minX, Math.min(0, mapTransform.x));
+    mapTransform.y = Math.max(minY, Math.min(0, mapTransform.y));
+  }
+
+  function applyMap() {
+    if (!mapStageEl || !mapStageEl.style || !mapStageEl.style.setProperty) return;
+    mapStageEl.style.transform =
+      "translate(" + mapTransform.x + "px," + mapTransform.y + "px) scale(" + mapTransform.scale + ")";
+    mapStageEl.style.setProperty("--inv", String(1 / mapTransform.scale));
+  }
+
+  function fitMap() {
+    if (!mapWrapEl) return;
+    var w = mapWrapEl.clientWidth || 900;
+    var h = mapWrapEl.clientHeight || 480;
+    mapFitScale = Math.max(w / MAP_W, h / MAP_H);
+    mapTransform.scale = mapFitScale;
+    mapTransform.x = (w - MAP_W * mapTransform.scale) / 2;
+    mapTransform.y = (h - MAP_H * mapTransform.scale) / 2;
+    clampMapPan();
+    applyMap();
+  }
+
+  function zoomMap(factor, clientX, clientY) {
+    if (!mapWrapEl) return;
+    var w = mapWrapEl.clientWidth || 900;
+    var h = mapWrapEl.clientHeight || 480;
+    var cx = typeof clientX === "number" ? clientX : w / 2;
+    var cy = typeof clientY === "number" ? clientY : h / 2;
+    var worldX = (cx - mapTransform.x) / mapTransform.scale;
+    var worldY = (cy - mapTransform.y) / mapTransform.scale;
+    var maxScale = mapFitScale * 5;
+    var next = clamp(mapTransform.scale * factor, mapFitScale, maxScale);
+    mapTransform.scale = next;
+    mapTransform.x = cx - worldX * next;
+    mapTransform.y = cy - worldY * next;
+    clampMapPan();
+    applyMap();
+  }
+
+  function mapImagePoint(clientX, clientY) {
+    if (!mapWrapEl) return null;
+    var rect = mapWrapEl.getBoundingClientRect
+      ? mapWrapEl.getBoundingClientRect()
+      : { left: 0, top: 0 };
+    var x = (clientX - rect.left - mapTransform.x) / (MAP_W * mapTransform.scale);
+    var y = (clientY - rect.top - mapTransform.y) / (MAP_H * mapTransform.scale);
+    return { x: clamp(x, 0, 1), y: clamp(y, 0, 1) };
+  }
+
+  function saveMapPositions() {
+    dirty = true;
+    saveGame();
+  }
+
+  function selectMapTarget(target) {
+    mapSelected = target;
+    if (!mapWrapEl) return;
+    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-camp]"), function (el) {
+      if (el.classList) el.classList.toggle("selected", target === "camp:" + el.getAttribute("data-map-camp"));
+    });
+    var villageEl = mapWrapEl.querySelectorAll("[data-map-village]")[0];
+    if (villageEl && villageEl.classList) villageEl.classList.toggle("selected", target === "village");
+    var hint = document.getElementById("map-hint");
+    if (hint) {
+      hint.textContent = target
+        ? "Ahora toca el punto del mapa donde quieres moverlo."
+        : "Toca un marcador y luego el punto del mapa donde quieres colocarlo.";
+    }
+  }
+
+  function initMap() {
+    mapWrapEl = document.getElementById("worldmap");
+    mapStageEl = document.getElementById("worldmap-stage");
+    if (!mapWrapEl || !mapStageEl) return;
+
+    var pointers = {};
+    var panning = false;
+    var moved = false;
+    var start = { x: 0, y: 0, tx: 0, ty: 0 };
+    var pinchStart = null;
+
+    fitMap();
+
+    function pointerList() {
+      return Object.keys(pointers).map(function (id) {
+        return pointers[id];
+      });
+    }
+
+    mapWrapEl.addEventListener("pointerdown", function (event) {
+      if (event.target && event.target.closest && event.target.closest(".marker")) return;
+      pointers[event.pointerId] = { x: event.clientX, y: event.clientY };
+      if (pointerList().length === 1) {
+        panning = true;
+        moved = false;
+        start = { x: event.clientX, y: event.clientY, tx: mapTransform.x, ty: mapTransform.y };
+        mapWrapEl.classList.add("dragging");
+      } else if (pointerList().length === 2) {
+        var pts = pointerList();
+        pinchStart = {
+          dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+          scale: mapTransform.scale,
+        };
+      }
+    });
+
+    mapWrapEl.addEventListener("pointermove", function (event) {
+      if (!pointers[event.pointerId]) return;
+      pointers[event.pointerId] = { x: event.clientX, y: event.clientY };
+      var pts = pointerList();
+      if (pts.length === 2 && pinchStart) {
+        var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        if (pinchStart.dist > 0) {
+          var target = clamp(
+            pinchStart.scale * (dist / pinchStart.dist),
+            mapFitScale,
+            mapFitScale * 5
+          );
+          var rect = mapWrapEl.getBoundingClientRect();
+          var cx = (pts[0].x + pts[1].x) / 2 - rect.left;
+          var cy = (pts[0].y + pts[1].y) / 2 - rect.top;
+          zoomMap(target / mapTransform.scale, cx, cy);
+        }
+        moved = true;
+        return;
+      }
+      if (!panning) return;
+      var dx = event.clientX - start.x;
+      var dy = event.clientY - start.y;
+      if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
+      mapTransform.x = start.tx + dx;
+      mapTransform.y = start.ty + dy;
+      clampMapPan();
+      applyMap();
+    });
+
+    function endPointer(event) {
+      if (!pointers[event.pointerId]) return;
+      delete pointers[event.pointerId];
+      if (pointerList().length < 2) pinchStart = null;
+      if (pointerList().length === 0) {
+        panning = false;
+        mapWrapEl.classList.remove("dragging");
+        if (mapEdit && !moved && mapSelected) {
+          var point = mapImagePoint(event.clientX, event.clientY);
+          if (point) {
+            if (mapSelected === "village") state.map.village = point;
+            else if (mapSelected.indexOf("camp:") === 0) {
+              state.map.camps[mapSelected.slice(5)] = point;
+            }
+            saveMapPositions();
+            renderGame();
+            var hint = document.getElementById("map-hint");
+            if (hint) hint.textContent = "Marcador movido. Elige otro o pulsa Terminar ajuste.";
+          }
+        }
+      }
+    }
+
+    mapWrapEl.addEventListener("pointerup", endPointer);
+    mapWrapEl.addEventListener("pointercancel", endPointer);
+    mapWrapEl.addEventListener("pointerleave", endPointer);
+
+    mapWrapEl.addEventListener(
+      "wheel",
+      function (event) {
+        event.preventDefault();
+        var rect = mapWrapEl.getBoundingClientRect();
+        var factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+        zoomMap(factor, event.clientX - rect.left, event.clientY - rect.top);
+      },
+      { passive: false }
+    );
+
+    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-camp]"), function (marker) {
+      marker.addEventListener("click", function (event) {
+        if (event.stopPropagation) event.stopPropagation();
+        var id = marker.getAttribute("data-map-camp");
+        if (mapEdit) {
+          selectMapTarget("camp:" + id);
+          return;
+        }
+        raid(Number(id));
+      });
+    });
+
+    Array.prototype.forEach.call(mapWrapEl.querySelectorAll("[data-map-village]"), function (marker) {
+      marker.addEventListener("click", function (event) {
+        if (event.stopPropagation) event.stopPropagation();
+        if (mapEdit) selectMapTarget("village");
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-map-zoom]"), function (button) {
+      button.addEventListener("click", function () {
+        zoomMap(button.getAttribute("data-map-zoom") === "in" ? 1.3 : 1 / 1.3);
+      });
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-map-center]"), function (button) {
+      button.addEventListener("click", function () {
+        fitMap();
+      });
+    });
+    var editBtn = document.getElementById("map-edit-btn");
+    if (editBtn) {
+      editBtn.addEventListener("click", function () {
+        mapEdit = !mapEdit;
+        mapSelected = null;
+        renderGame();
+      });
+    }
+  }
+
+  function raceView() {
+    var race = RACES[state.race];    return (
       '<div class="panel">' +
         '<div class="panel-head"><h2>Tu raza: ' + race.name + '</h2><span class="hint">' + race.motto + "</span></div>" +
         '<div class="panel-body">' +
@@ -1547,11 +1863,13 @@
     var tabs = [
       ["aldea", "Aldea"],
       ["cuartel", "Cuartel"],
+      ["mapa", "Mapa"],
       ["campamento", "Incursiones"],
       ["raza", "Raza"],
     ];
     var center;
     if (view === "cuartel") center = troopsView();
+    else if (view === "mapa") center = mapView();
     else if (view === "campamento") center = campsView();
     else if (view === "raza") center = raceView();
     else center = buildingsView();
@@ -1645,6 +1963,7 @@
         raid(Number(button.getAttribute("data-raid")));
       });
     });
+    initMap();
   }
 
   /* ---------------- boot ---------------- */

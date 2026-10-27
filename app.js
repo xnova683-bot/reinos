@@ -1557,6 +1557,47 @@
     return { x: x / pts.length, y: y / pts.length };
   }
 
+  function roadsSvg(points) {
+    if (!points || points.length < 2) return "";
+    var inTree = [0];
+    var used = { 0: true };
+    var edges = [];
+
+    while (inTree.length < points.length) {
+      var best = null;
+      for (var i = 0; i < inTree.length; i++) {
+        var a = points[inTree[i]];
+        for (var j = 0; j < points.length; j++) {
+          if (used[j]) continue;
+          var b = points[j];
+          var dx = (Number(a.x) - Number(b.x)) * MAP_W;
+          var dy = (Number(a.y) - Number(b.y)) * MAP_H;
+          var dist = dx * dx + dy * dy;
+          if (!best || dist < best.dist) best = { from: inTree[i], to: j, dist: dist };
+        }
+      }
+      if (!best) break;
+      edges.push(best);
+      used[best.to] = true;
+      inTree.push(best.to);
+    }
+
+    return (
+      '<svg class="road-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
+        edges
+          .map(function (edge) {
+            var a = points[edge.from];
+            var b = points[edge.to];
+            return (
+              '<line class="road" x1="' + (a.x * 100).toFixed(3) + '" y1="' + (a.y * 100).toFixed(3) +
+                '" x2="' + (b.x * 100).toFixed(3) + '" y2="' + (b.y * 100).toFixed(3) + '"></line>'
+            );
+          })
+          .join("") +
+      "</svg>"
+    );
+  }
+
   function mapImageUrl() {
     return (world.settings && world.settings.map) || "./assets/map.jpg";
   }
@@ -1637,7 +1678,14 @@
         return String(player.region) === String(open.id) &&
           typeof player.x === "number" && typeof player.y === "number";
       });
-      layer = players
+      var points = players.map(function (player) {
+        return { x: Number(player.x), y: Number(player.y) };
+      });
+      if (String(session.region) === String(open.id)) {
+        points.push({ x: Number(mePos.x), y: Number(mePos.y) });
+      }
+
+      layer = roadsSvg(points) + players
         .map(function (player) {
           var tag = (player.online ? "" : " offline") + (player.shield ? " shielded" : "");
           return (

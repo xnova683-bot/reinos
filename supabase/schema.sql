@@ -81,6 +81,21 @@ create table if not exists public.world_events (
   text text not null
 );
 
+create table if not exists public.npcs (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  region_id integer references public.regions (id) on delete set null,
+  x numeric,
+  y numeric,
+  power integer not null default 60,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.npcs enable row level security;
+drop policy if exists "npcs_read" on public.npcs;
+create policy "npcs_read" on public.npcs for select to authenticated using (true);
+
 alter table public.regions enable row level security;
 alter table public.world_settings enable row level security;
 alter table public.pvp_hits enable row level security;
@@ -170,6 +185,43 @@ begin
   end loop;
 end;
 $seed$;
+
+-- ============================================================
+-- Aldeas NPC (3 por región)
+-- ============================================================
+
+do $npcseed$
+declare
+  suffixes text[] := array['Vigía', 'Campamento', 'Ruinas'];
+  region record;
+  k integer;
+  bx numeric;
+  oy numeric;
+  bw numeric;
+  bh numeric;
+begin
+  if (select count(*) from public.npcs) > 0 then
+    return;
+  end if;
+
+  for region in select * from public.regions order by id loop
+    bx := (region.bbox->>'x0')::numeric;
+    oy := (region.bbox->>'y0')::numeric;
+    bw := (region.bbox->>'x1')::numeric - bx;
+    bh := (region.bbox->>'y1')::numeric - oy;
+
+    for k in 0..2 loop
+      insert into public.npcs (name, region_id, x, y, power)
+      values (
+        region.name || ' · ' || suffixes[k + 1],
+        region.id,
+        least(0.99, greatest(0.01, bx + bw * (0.25 + k * 0.25))),
+        least(0.99, greatest(0.01, oy + bh * (0.3 + k * 0.2))),
+        60 + k * 40
+      );
+    end loop;
+  end loop;
+end $npcseed$;
 
 -- ============================================================
 -- Utilidades
@@ -362,6 +414,13 @@ begin
           where p.region_id = r.id and coalesce(p.is_admin, false) = false)
       ) order by r.id)
       from public.regions r
+    ), '[]'::jsonb),
+    'npcs', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', n.id, 'name', n.name, 'region', n.region_id,
+        'x', n.x, 'y', n.y, 'power', n.power
+      ) order by n.id)
+      from public.npcs n
     ), '[]'::jsonb),
     'speed', coalesce((
       select s.resource_speed from public.world_settings s where s.id = 1
@@ -731,6 +790,43 @@ begin
   return jsonb_build_object('ok', true);
 end;
 $fn$;
+
+create or replace function public.admin_move_npc(target_id uuid, nx numeric, ny numeric)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  px numeric := least(0.995, greatest(0.005, nx));
+  py numeric := least(0.995, greatest(0.005, ny));
+  reg integer;
+  reg_locked boolean := false;
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+
+  select r.id, r.locked into reg, reg_locked
+  from public.regions r
+  where px between (r.bbox->>'x0')::numeric and (r.bbox->>'x1')::numeric
+    and py between (r.bbox->>'y0')::numeric and (r.bbox->>'y1')::numeric
+  order by r.id
+  limit 1;
+
+  if reg is not null and coalesce(reg_locked, false) then
+    raise exception 'region locked';
+  end if;
+
+  update public.npcs
+    set x = px, y = py,
+        region_id = coalesce(reg, region_id),
+        updated_at = now()
+  where id = target_id;
+  if not found then raise exception 'npc not found'; end if;
+  return jsonb_build_object('ok', true);
+end;
+$fn$;
+
+grant execute on function public.admin_move_npc(uuid, numeric, numeric) to authenticated;
 
 create or replace function public.admin_set_resource_speed(p_speed numeric)
 returns jsonb

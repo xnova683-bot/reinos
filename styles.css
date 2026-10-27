@@ -1282,6 +1282,33 @@ input {
   margin-bottom: 0.9rem;
 }
 
+.marker.npc .pin {
+  width: 14px;
+  height: 14px;
+  margin: 2px auto 0;
+  border-radius: 50%;
+  background: #8a9a70;
+  border: 2px solid #181420;
+  box-shadow: 0 0 0 3px rgba(138, 154, 112, 0.25);
+  transform: none;
+}
+
+.marker.npc .mlabel {
+  color: #c9d3b7;
+  max-width: 8.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worldmap-stage:not(.labels) .marker.npc .mlabel {
+  display: none;
+}
+
+.map-legend .dot.npc {
+  background: #8a9a70;
+}
+
 .admin-page .panel-body {
   display: grid;
   gap: 0.8rem;

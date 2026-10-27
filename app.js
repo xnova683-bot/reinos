@@ -1375,7 +1375,7 @@
   /* ---------------- mundo compartido ---------------- */
 
   var world = {
-    players: [], regions: [], events: [], phones: [], online: 0,
+    players: [], regions: [], events: [], phones: [], npcs: [], online: 0,
     settings: {}, maintenance: {}, me: {}, at: 0, error: "",
   };
   var worldTimer = null;
@@ -1421,6 +1421,7 @@
         world.regions = Array.isArray(data.regions) ? data.regions : [];
         world.events = Array.isArray(data.events) ? data.events : [];
         world.phones = Array.isArray(data.phones) ? data.phones : [];
+        world.npcs = Array.isArray(data.npcs) ? data.npcs : [];
         world.online = Number(data.online || 0);
         world.speed = Number(data.speed || 1);
         if (state) state.speed = world.speed;
@@ -1459,7 +1460,7 @@
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
-    world = { players: [], regions: [], events: [], phones: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
+    world = { players: [], regions: [], events: [], phones: [], npcs: [], online: 0, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
     pvpTarget = null;
     pvpResult = null;
     adminMode = false;
@@ -1801,15 +1802,34 @@
         return String(player.region) === String(open.id) &&
           typeof player.x === "number" && typeof player.y === "number";
       });
+      var npcs = world.npcs.filter(function (npc) {
+        return String(npc.region) === String(open.id) &&
+          typeof npc.x === "number" && typeof npc.y === "number";
+      });
       var points = players.map(function (player) {
         return { x: Number(player.x), y: Number(player.y) };
+      });
+      npcs.forEach(function (npc) {
+        points.push({ x: Number(npc.x), y: Number(npc.y) });
       });
       var mineHere =
         !!meMarker &&
         (String(session.region) === String(open.id) || pointInRegion(open, mePos));
       if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y) });
 
-      layer = roadsSvg(points) + players
+      layer = roadsSvg(points) + npcs
+        .map(function (npc) {
+          return (
+            '<button class="marker npc" data-map-npc="' + escapeHtml(npc.id) + '" ' +
+              'data-mx="' + npc.x + '" data-my="' + npc.y + '" ' +
+              'title="' + escapeHtml(npc.name) + " · Poder " + num(npc.power) + '" ' +
+              'style="left:' + (npc.x * 100).toFixed(2) + "%;top:" + (npc.y * 100).toFixed(2) + '%">' +
+              '<span class="mlabel">' + escapeHtml(npc.name) + "</span>" +
+              '<span class="pin"></span>' +
+            "</button>"
+          );
+        })
+        .join("") + players
         .map(function (player) {
           var tag = (player.online ? "" : " offline") + (player.shield ? " shielded" : "");
           return (
@@ -1924,6 +1944,7 @@
           '<span><i class="dot open"></i>Región abierta</span>' +
           '<span><i class="dot locked"></i>Bloqueada</span>' +
           '<span><i class="dot player"></i>Aldea</span>' +
+          '<span><i class="dot npc"></i>NPC</span>' +
           '<span class="grow"></span><span class="hint">Tu poder: ' + num(power) + "</span>" +
         "</div>" +
         feed +
@@ -1951,6 +1972,9 @@
     };
     world.players.forEach(function (player) {
       if (String(player.region) === String(region.id)) grow(player);
+    });
+    world.npcs.forEach(function (npc) {
+      if (String(npc.region) === String(region.id)) grow(npc);
     });
     if (session && session.village &&
         (String(session.region) === String(region.id) || pointInRegion(region, session.village))) {
@@ -2093,12 +2117,17 @@
         var target = event.target;
         var point = target && target.closest ? target.closest("[data-region-point]") : null;
         var marker = target && target.closest ? target.closest("[data-map-player]") : null;
+        var npc = target && target.closest ? target.closest("[data-map-npc]") : null;
         if (point) {
           itemDrag = { kind: "region", id: point.getAttribute("data-region-point"), x: event.clientX, y: event.clientY };
           return;
         }
         if (marker) {
           itemDrag = { kind: "village", id: marker.getAttribute("data-map-player"), x: event.clientX, y: event.clientY };
+          return;
+        }
+        if (npc) {
+          itemDrag = { kind: "npc", id: npc.getAttribute("data-map-npc"), x: event.clientX, y: event.clientY };
           return;
         }
       }
@@ -2168,7 +2197,8 @@
           } else {
             var point = mapFraction(event.clientX, event.clientY);
             if (point) {
-              adminAction("admin_move_village", { target_id: drag.id, nx: point.x, ny: point.y });
+              adminAction(drag.kind === "npc" ? "admin_move_npc" : "admin_move_village",
+                { target_id: drag.id, nx: point.x, ny: point.y });
             }
           }
         }

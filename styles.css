@@ -1077,6 +1077,24 @@ input {
   font-size: 0.7rem;
 }
 
+.admin-phones {
+  margin-top: 0.6rem;
+  border-top: 1px solid rgba(216, 189, 82, 0.25);
+  padding-top: 0.5rem;
+}
+
+.admin-phones b {
+  display: block;
+  color: var(--gold);
+  font-size: 0.78rem;
+  margin-bottom: 0.35rem;
+}
+
+.admin-phones .admin-row b {
+  color: var(--text-sub);
+  font-weight: 600;
+}
+
 .admin-hint {
   margin-top: 0.5rem;
   font-size: 0.74rem;

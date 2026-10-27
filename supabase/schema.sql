@@ -1,6 +1,9 @@
 -- WoW Imperial - mundo compartido con regiones poligonales
 -- Ejecuta TODO este archivo en Supabase > SQL Editor > Run.
 -- Es idempotente: se puede volver a ejecutar sin perder partidas.
+-- Registro solo con teléfono (correo interno: <telefono>@reinos.local).
+-- Cuenta de administración: usuario "admin", contraseña "Reinos#2026".
+-- IMPORTANTE: desactiva "Confirm email" en Supabase > Authentication > Providers > Email.
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
@@ -15,6 +18,8 @@ alter table public.profiles add column if not exists x numeric;
 alter table public.profiles add column if not exists y numeric;
 alter table public.profiles add column if not exists region_id integer;
 alter table public.profiles add column if not exists email text;
+alter table public.profiles add column if not exists phone text;
+create index if not exists profiles_phone_idx on public.profiles (phone);
 alter table public.profiles add column if not exists is_admin boolean not null default false;
 alter table public.profiles add column if not exists last_seen timestamptz;
 alter table public.profiles add column if not exists shield_until timestamptz;
@@ -239,6 +244,10 @@ begin
     end if;
   end if;
 
+  if new.phone is null and new.email is not null then
+    new.phone := substring(new.email from '^([0-9]{6,15})@reinos\.local$');
+  end if;
+
   new.last_seen := now();
   if new.shield_until is null then
     new.shield_until := now() + interval '12 hours';
@@ -258,7 +267,16 @@ returns trigger
 language plpgsql
 as $fn$
 begin
-  if new.is_admin is distinct from old.is_admin and not coalesce(old.is_admin, false) then
+  if tg_op = 'INSERT' then
+    if new.is_admin and auth.uid() is not null then
+      new.is_admin := false;
+    end if;
+    return new;
+  end if;
+
+  if auth.uid() is not null
+     and new.is_admin is distinct from old.is_admin
+     and not coalesce(old.is_admin, false) then
     raise exception 'not allowed';
   end if;
   return new;
@@ -267,7 +285,7 @@ $fn$;
 
 drop trigger if exists profiles_guard_admin on public.profiles;
 create trigger profiles_guard_admin
-  before update on public.profiles
+  before insert or update on public.profiles
   for each row execute function public.guard_admin_flag();
 
 -- ============================================================
@@ -338,7 +356,17 @@ begin
     'online', coalesce((
       select count(*) from public.profiles p
       where p.last_seen is not null and p.last_seen > now() - interval '2 minutes'
-    ), 0)
+    ), 0),
+    'phones', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'name', coalesce(nullif(p.username, ''), '—'),
+        'phone', coalesce(p.phone, '—'),
+        'region', p.region_id,
+        'wins', p.pvp_wins
+      ) order by p.updated_at desc)
+      from public.profiles p
+      where (select coalesce(a.is_admin, false) from public.profiles a where a.id = uid)
+    ), '[]'::jsonb)
   ) into result;
 
   return result;
@@ -660,4 +688,50 @@ grant select on public.ranking to anon, authenticated;
 -- Marca al administrador (se ejecuta después de que exista su cuenta)
 update public.profiles
   set is_admin = true
-  where lower(email) = 'yordano159753@gmail.com';
+  where lower(email) in ('yordano159753@gmail.com', 'admin@reinos.local');
+
+-- ============================================================
+-- Cuenta de administración (usuario: admin / contraseña: Reinos#2026)
+-- ============================================================
+
+create extension if not exists pgcrypto with schema extensions;
+
+do $admin$
+declare
+  admin_id uuid;
+begin
+  select id into admin_id from auth.users where email = 'admin@reinos.local' limit 1;
+
+  if admin_id is null then
+    admin_id := gen_random_uuid();
+    insert into auth.users (
+      instance_id, id, aud, role, email, encrypted_password,
+      email_confirmed_at, created_at, updated_at,
+      raw_app_meta_data, raw_user_meta_data,
+      confirmation_token, recovery_token, email_change_token_new, email_change
+    ) values (
+      '00000000-0000-0000-0000-000000000000', admin_id, 'authenticated', 'authenticated',
+      'admin@reinos.local', extensions.crypt('Reinos#2026', extensions.gen_salt('bf')),
+      now(), now(), now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"username":"admin"}'::jsonb,
+      '', '', '', ''
+    );
+
+    insert into auth.identities (
+      id, user_id, provider_id, identity_data, provider, last_sign_in_at, created_at, updated_at
+    ) values (
+      gen_random_uuid(), admin_id, admin_id::text,
+      jsonb_build_object('sub', admin_id::text, 'email', 'admin@reinos.local'),
+      'email', now(), now(), now()
+    );
+  end if;
+
+  insert into public.profiles (id, username, email, race, state, is_admin)
+  values (admin_id, 'admin', 'admin@reinos.local', 'alianza', '{}'::jsonb, true)
+  on conflict (id) do update
+    set username = 'admin',
+        is_admin = true,
+        email = 'admin@reinos.local';
+end;
+$admin$;

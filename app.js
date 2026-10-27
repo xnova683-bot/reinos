@@ -179,27 +179,20 @@
     }
   }
 
-  function hashPassword(text) {
-    var h1 = 5381;
-    var h2 = 52711;
-    for (var i = 0; i < text.length; i++) {
-      var c = text.charCodeAt(i);
-      h1 = (h1 * 33) ^ c;
-      h2 = (h2 * 31) ^ (c + 7);
-    }
-    return (h1 >>> 0).toString(36) + "." + (h2 >>> 0).toString(36) + "." + text.length.toString(36);
+  function normalizePhone(value) {
+    return String(value || "").replace(/\D/g, "");
   }
 
-  function getAccounts() {
-    return readJSON(ACCOUNTS_KEY, {});
+  function loginToEmail(value) {
+    var raw = String(value || "").trim().toLowerCase();
+    if (raw === "admin") return "admin@reinos.local";
+    var phone = normalizePhone(raw);
+    return phone ? phone + "@reinos.local" : "";
   }
 
-  function saveAccounts(accounts) {
-    writeJSON(ACCOUNTS_KEY, accounts);
-  }
-
-  function normalizeEmail(value) {
-    return String(value || "").trim().toLowerCase();
+  function phoneFromEmail(value) {
+    var match = /^(\d{6,15})@reinos\.local$/.exec(String(value || ""));
+    return match ? match[1] : "";
   }
 
   /* ---------------- helpers ---------------- */
@@ -372,28 +365,7 @@
 
   function saveGame() {
     if (!session || !account || !state) return;
-    if (session.mode === "cloud") {
-      scheduleCloudSave();
-      return;
-    }
-    var accounts = getAccounts();
-    if (!accounts[account]) return;
-    accounts[account].state = state;
-    accounts[account].race = state.race;
-    saveAccounts(accounts);
-    dirty = false;
-  }
-
-  function mirrorLocal(email, pass, race, gameState) {
-    var accounts = getAccounts();
-    accounts[email] = {
-      email: email,
-      pass: pass || (accounts[email] && accounts[email].pass) || "",
-      race: race,
-      createdAt: (accounts[email] && accounts[email].createdAt) || now(),
-      state: gameState,
-    };
-    saveAccounts(accounts);
+    scheduleCloudSave();
   }
 
   /* ---------------- supabase cloud ---------------- */
@@ -502,6 +474,7 @@
           id: userId,
           username: username,
           email: (session && session.email) || null,
+          phone: (session && session.phone) || phoneFromEmail((session && session.email) || "") || null,
           race: race,
           state: gameState,
           updated_at: new Date().toISOString(),
@@ -546,17 +519,19 @@
     });
   }
 
-  function startCloudSession(auth, email, password) {
+  function startCloudSession(auth, email, password, phone) {
     session = {
       mode: "cloud",
       email: email,
+      phone: phone || phoneFromEmail(email),
       token: auth.access_token,
       refreshToken: auth.refresh_token,
       userId: auth.user.id,
-      username: (auth.user.user_metadata && auth.user.user_metadata.username) || email.split("@")[0],
+      username: phone || (email === "admin@reinos.local" ? "admin" : "") ||
+        (auth.user.user_metadata && auth.user.user_metadata.username) || email.split("@")[0],
       expiresAt: now() + (auth.expires_in || 3600) * 1000,
     };
-    account = email;
+    account = session.phone || (email === "admin@reinos.local" ? "admin" : email);
     writeJSON(SESSION_KEY, session);
 
     return cloudLoadProfile(session.token, session.userId).then(function (result) {
@@ -573,7 +548,10 @@
       if (result.ok) setCloudState("ready");
       var row = Array.isArray(result.data) ? result.data[0] : null;
       if (!row) {
-        pendingRace = { mode: "cloud", email: email, pass: password || "", token: session.token };
+        pendingRace = {
+          mode: "cloud", email: email, phone: session.phone,
+          pass: password || "", token: session.token,
+        };
         renderRaceSelection();
         return;
       }
@@ -599,42 +577,39 @@
           ""
         );
       }
-      mirrorLocal(email, password, state.race, state);
       enterGame();
     });
   }
 
   /* ---------------- auth screens ---------------- */
 
-  var authCloud = (readJSON(SETTINGS_KEY, {}).cloudMode !== false);
-
   function translateCloudError(result) {
     var message = cloudErrorMessage(result);
     var lower = String(message).toLowerCase();
-    if (lower.indexOf("invalid login credentials") !== -1) return "Correo o contraseña incorrectos.";
+    if (lower.indexOf("invalid login credentials") !== -1) return "Teléfono o contraseña incorrectos.";
     if (lower.indexOf("email not confirmed") !== -1)
-      return "Debes confirmar tu correo antes de entrar. Revisa tu bandeja de entrada (o desactiva la confirmación por correo en Supabase).";
+      return "La cuenta aún no está confirmada. Pide al administrador que active las cuentas (o desactiva la confirmación por correo en Supabase).";
     if (lower.indexOf("user already registered") !== -1)
-      return "Ya existe una cuenta con ese correo. Inicia sesión.";
+      return "Ya existe una cuenta con ese teléfono. Inicia sesión.";
     if (lower.indexOf("password should be") !== -1) return "La contraseña es demasiado débil (mínimo 6 caracteres).";
     if (lower.indexOf("rate limit") !== -1 || lower.indexOf("too many") !== -1)
       return "Demasiados intentos. Espera un minuto y vuelve a probar.";
+    if (lower.indexOf("unable to validate email") !== -1 || lower.indexOf("invalid email") !== -1)
+      return "Ese teléfono no es válido. Usa solo números (7 a 15 dígitos).";
     return message;
   }
 
   function renderAuth() {
     var isLogin = authMode === "login";
     var networkNote = "";
-    if (authCloud) {
-      if (cloudState === "missing") {
-        networkNote =
-          '<div class="msg error">Falta el esquema en Supabase. Abre el SQL Editor del dashboard, ejecuta el archivo ' +
-          "<b>supabase/schema.sql</b> y recarga esta página.</div>";
-      } else if (cloudState === "offline") {
-        networkNote = '<div class="msg error">No se pudo conectar con Supabase. Revisa tu conexión o usa el modo local.</div>';
-      } else {
-        networkNote = '<div class="msg ok">Conectado a Supabase. Tus partidas se guardan en la nube.</div>';
-      }
+    if (cloudState === "missing") {
+      networkNote =
+        '<div class="msg error">Falta el esquema en Supabase. Abre el SQL Editor del dashboard, ejecuta el archivo ' +
+        "<b>supabase/schema.sql</b> y recarga esta página.</div>";
+    } else if (cloudState === "offline") {
+      networkNote = '<div class="msg error">No se pudo conectar con Supabase. Revisa tu conexión.</div>';
+    } else {
+      networkNote = '<div class="msg ok">Juego en línea. Tu partida se guarda en la nube.</div>';
     }
     app.innerHTML =
       '<div class="auth-screen">' +
@@ -643,16 +618,12 @@
             "<h1>WoW Imperial</h1>" +
             "<p>Forja tu imperio. Elige tu raza y domina.</p>" +
           "</div>" +
-          '<div class="auth-modes">' +
-            '<button type="button" class="mode-tab' + (authCloud ? " active" : "") + '" data-mode="cloud">Nube</button>' +
-            '<button type="button" class="mode-tab' + (!authCloud ? " active" : "") + '" data-mode="local">Local</button>' +
-          "</div>" +
           '<form class="auth-form" id="auth-form" novalidate>' +
             networkNote +
             (authError ? '<div class="msg error">' + escapeHtml(authError) + "</div>" : "") +
             (authInfo ? '<div class="msg ok">' + escapeHtml(authInfo) + "</div>" : "") +
-            '<label class="field">Correo electrónico' +
-              '<input type="email" name="email" autocomplete="email" placeholder="tu@correo.com" required />' +
+            '<label class="field">Teléfono' +
+              '<input type="tel" name="phone" inputmode="numeric" autocomplete="tel" placeholder="Solo números" required />' +
             "</label>" +
             '<label class="field">Contraseña' +
               '<input type="password" name="password" autocomplete="' +
@@ -672,18 +643,6 @@
         "</div>" +
       "</div>";
 
-    Array.prototype.forEach.call(app.querySelectorAll("[data-mode]"), function (button) {
-      button.addEventListener("click", function () {
-        authCloud = button.getAttribute("data-mode") === "cloud";
-        var settings = readJSON(SETTINGS_KEY, {});
-        settings.cloudMode = authCloud;
-        writeJSON(SETTINGS_KEY, settings);
-        authError = "";
-        authInfo = "";
-        renderAuth();
-      });
-    });
-
     document.getElementById("toggle-mode").addEventListener("click", function () {
       authMode = isLogin ? "register" : "login";
       authError = "";
@@ -694,13 +653,15 @@
     document.getElementById("auth-form").addEventListener("submit", function (event) {
       event.preventDefault();
       var form = event.currentTarget;
-      var email = normalizeEmail(form.elements.email.value);
+      var typed = String(form.elements.phone.value || "").trim();
       var password = String(form.elements.password.value || "");
       authError = "";
       authInfo = "";
 
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-        authError = "Introduce un correo electrónico válido.";
+      var isAdminLogin = isLogin && typed.toLowerCase() === "admin";
+      var phone = normalizePhone(typed);
+      if (!isAdminLogin && !/^\d{7,15}$/.test(phone)) {
+        authError = "Introduce tu número de teléfono (solo números, 7 a 15 dígitos).";
         renderAuth();
         return;
       }
@@ -710,41 +671,13 @@
         return;
       }
 
-      if (authCloud) {
-        cloudAuthFlow(email, password, isLogin);
-        return;
-      }
-
-      var accounts = getAccounts();
-      if (isLogin) {
-        var existing = accounts[email];
-        if (!existing) {
-          authError = "No existe una cuenta con ese correo.";
-          renderAuth();
-          return;
-        }
-        if (existing.pass !== hashPassword(password)) {
-          authError = "Contraseña incorrecta.";
-          renderAuth();
-          return;
-        }
-        startSession(email);
-        return;
-      }
-
-      if (accounts[email]) {
-        authError = "Ya existe una cuenta con ese correo. Inicia sesión.";
-        renderAuth();
-        return;
-      }
-      pendingRace = { mode: "local", email: email, pass: hashPassword(password) };
-      renderRaceSelection();
+      cloudAuthFlow(loginToEmail(typed), password, isLogin, isAdminLogin ? "" : phone);
     });
   }
 
   var authBusy = false;
 
-  function cloudAuthFlow(email, password, isLogin) {
+  function cloudAuthFlow(email, password, isLogin, phone) {
     authBusy = true;
     renderAuth();
 
@@ -763,7 +696,7 @@
       var data = result.data || {};
       if (data.access_token) {
         done();
-        startCloudSession(data, email, password).catch(function () {
+        startCloudSession(data, email, password, phone).catch(function () {
           authBusy = false;
           authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
           renderAuth();
@@ -774,7 +707,7 @@
       cloudSignIn(email, password).then(function (signIn) {
         if (signIn.ok && signIn.data && signIn.data.access_token) {
           done();
-          startCloudSession(signIn.data, email, password).catch(function () {
+          startCloudSession(signIn.data, email, password, phone).catch(function () {
             authBusy = false;
             authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
             renderAuth();
@@ -784,7 +717,7 @@
         done();
         authMode = "login";
         authInfo =
-          "Cuenta creada. Si Supabase pide confirmación por correo, revisa tu email y luego inicia sesión.";
+          "Cuenta creada, pero Supabase pide confirmación. Pide al administrador que la active.";
         renderAuth();
       });
     }
@@ -793,7 +726,7 @@
       cloudSignIn(email, password).then(function (result) {
         if (!result.ok) return fail(result);
         done();
-        startCloudSession(result.data, email, password).catch(function () {
+        startCloudSession(result.data, email, password, phone).catch(function () {
           authBusy = false;
           authError = "No se pudo cargar tu perfil. Inténtalo de nuevo.";
           renderAuth();
@@ -811,28 +744,6 @@
       authError = "No se pudo conectar con Supabase.";
       renderAuth();
     });
-  }
-
-  function startSession(email) {
-    var accounts = getAccounts();
-    var record = accounts[email];
-    if (!record) {
-      authError = "Cuenta no encontrada.";
-      renderAuth();
-      return;
-    }
-    session = { email: email };
-    account = email;
-    state = migrateState(record.state || newState(record.race || "alianza"));
-    writeJSON(SESSION_KEY, session);
-    var offline = applyOffline(state);
-    if (offline.minutes >= 1) {
-      addLog(
-        "Mientras estabas fuera (" + Math.round(offline.minutes) + " min) tu aldea produjo recursos.",
-        ""
-      );
-    }
-    enterGame();
   }
 
   function logout() {
@@ -931,8 +842,8 @@
                 return;
               }
               state = freshState;
-              mirrorLocal(cloudPending.email, "", raceId, state);
-              session.username = session.username || cloudPending.email.split("@")[0];
+              session.phone = cloudPending.phone || session.phone;
+              session.username = session.username || cloudPending.phone || cloudPending.email.split("@")[0];
               return cloudLoadProfile(session.token, session.userId).then(function (profile) {
                 var row = profile.ok && Array.isArray(profile.data) ? profile.data[0] : null;
                 if (!row || row.x == null) {
@@ -955,21 +866,6 @@
               authError = "No se pudo conectar con Supabase. Inténtalo de nuevo.";
               renderRaceSelection();
             });
-          return;
-        }
-        if (pendingRace) {
-          var email = pendingRace.email;
-          var accounts = getAccounts();
-          accounts[email] = {
-            email: email,
-            pass: pendingRace.pass,
-            race: raceId,
-            createdAt: now(),
-            state: newState(raceId),
-          };
-          saveAccounts(accounts);
-          pendingRace = null;
-          startSession(email);
           return;
         }
         if (!state) return;
@@ -1458,7 +1354,7 @@
   /* ---------------- mundo compartido ---------------- */
 
   var world = {
-    players: [], regions: [], events: [], online: 0,
+    players: [], regions: [], events: [], phones: [], online: 0,
     settings: {}, me: {}, at: 0, error: "",
   };
   var worldTimer = null;
@@ -1493,6 +1389,7 @@
         world.players = Array.isArray(data.players) ? data.players : [];
         world.regions = Array.isArray(data.regions) ? data.regions : [];
         world.events = Array.isArray(data.events) ? data.events : [];
+        world.phones = Array.isArray(data.phones) ? data.phones : [];
         world.online = Number(data.online || 0);
         world.settings = data.settings || {};
         world.me = data.me || {};
@@ -1522,7 +1419,7 @@
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
-    world = { players: [], regions: [], events: [], online: 0, settings: {}, me: {}, at: 0, error: "" };
+    world = { players: [], regions: [], events: [], phones: [], online: 0, settings: {}, me: {}, at: 0, error: "" };
     pvpTarget = null;
     pvpResult = null;
     adminMode = false;
@@ -1756,6 +1653,20 @@
               .join("") +
           "</div>" +
           (adminMode ? '<div class="admin-hint">Arrastra una región o una aldea para moverla.</div>' : "") +
+          '<div class="admin-phones"><b>Teléfonos registrados (' + world.phones.length + ")</b>" +
+            (world.phones.length
+              ? world.phones
+                  .map(function (row) {
+                    return (
+                      '<div class="admin-row"><span>' + escapeHtml(String(row.phone)) +
+                        " · " + escapeHtml(String(row.name)) +
+                        (row.region != null ? " · R" + escapeHtml(String(row.region)) : "") +
+                      "</span><b>" + num(row.wins || 0) + " V</b></div>"
+                    );
+                  })
+                  .join("")
+              : '<div class="admin-hint">Aún no hay jugadores registrados.</div>') +
+          "</div>" +
         "</div>";
     }
 
@@ -2232,13 +2143,6 @@
       });
       return;
     }
-    if (savedSession && savedSession.email) {
-      var accounts = getAccounts();
-      if (accounts[savedSession.email]) {
-        startSession(savedSession.email);
-        return;
-      }
-    }
     renderAuth();
     checkCloud().then(function () {
       if (!session) renderAuth();
@@ -2253,13 +2157,15 @@
         session = {
           mode: "cloud",
           email: saved.email,
+          phone: saved.phone || phoneFromEmail(saved.email),
           token: token,
           refreshToken: saved.refreshToken,
           userId: (user.data && user.data.id) || saved.userId,
-          username: saved.username || saved.email.split("@")[0],
+          username: saved.username || saved.phone || saved.email.split("@")[0],
+          isAdmin: saved.isAdmin,
           expiresAt: saved.expiresAt,
         };
-        account = saved.email;
+        account = session.phone || (saved.email === "admin@reinos.local" ? "admin" : saved.email);
         writeJSON(SESSION_KEY, session);
         return cloudLoadProfile(session.token, session.userId).then(function (profile) {
           if (profile.status === 404) {
@@ -2273,14 +2179,27 @@
           }
           var row = Array.isArray(profile.data) ? profile.data[0] : null;
           if (!row) {
-            pendingRace = { mode: "cloud", email: saved.email, pass: "", token: session.token };
+            pendingRace = {
+              mode: "cloud", email: saved.email, phone: session.phone,
+              pass: "", token: session.token,
+            };
             renderRaceSelection();
             return true;
           }
           state = migrateState(row.state && row.state.race ? row.state : newState(row.race));
           state.race = row.race || state.race;
           session.username = row.username || session.username;
-          if (row.x != null) session.village = { x: Number(row.x), y: Number(row.y) };
+          session.isAdmin = !!row.is_admin;
+          session.region = row.region_id;
+          if (row.x == null) {
+            session = null;
+            account = null;
+            localStorage.removeItem(SESSION_KEY);
+            authError = "No hay plazas libres en las regiones abiertas. Pide al administrador que abra otra región.";
+            renderAuth();
+            return true;
+          }
+          session.village = { x: Number(row.x), y: Number(row.y) };
           writeJSON(SESSION_KEY, session);
           var offline = applyOffline(state);
           if (offline.minutes >= 1) {
@@ -2289,7 +2208,6 @@
               ""
             );
           }
-          mirrorLocal(saved.email, "", state.race, state);
           enterGame();
           return true;
         });

@@ -3947,6 +3947,23 @@
 
     var prod = totalProduction(state);
 
+    var mapBg =
+      state.race === "horda"
+        ? 'url("./assets/map-card-horde.jpg")'
+        : state.race === "enanos"
+        ? 'url("./assets/map-card-enanos.jpg")'
+        : 'url("./assets/map-card.jpg")';
+    if (!app.querySelector("style[data-map-card]")) {
+      var style = document.createElement("style");
+      style.setAttribute("data-map-card", "1");
+      style.textContent =
+        ":root{--map-card-bg:" + mapBg + ";}";
+      document.head.appendChild(style);
+    } else {
+      app.querySelector("style[data-map-card]").textContent =
+        ":root{--map-card-bg:" + mapBg + ";}";
+    }
+
     app.innerHTML =
       '<div class="topbar">' +
         '<div class="brand">WoW Imperial <span class="dot">|</span> <span style="color:var(--' +

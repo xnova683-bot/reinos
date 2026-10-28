@@ -642,7 +642,7 @@ input {
   background:
     linear-gradient(180deg, rgba(12, 10, 16, 0.42), rgba(12, 10, 16, 0.76)),
     radial-gradient(circle at 50% 35%, rgba(216, 189, 82, 0.16), transparent 62%),
-    url("./assets/map-card.jpg") center / cover no-repeat,
+    var(--map-card-bg) center / cover no-repeat,
     #100e15;
   display: grid;
   place-items: center;

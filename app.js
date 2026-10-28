@@ -3953,13 +3953,14 @@
     var tabs = [
       ["aldea", "Aldea"],
       ["cuartel", "Cuartel"],
+      ["mapa", "Mapa"],
       ["mercado", "Mercado"],
       ["raza", "Raza"],
     ];
     if (session && session.isAdmin) tabs.push(["admin", "Administrar WoW"]);
-    if (view === "mapa") view = "aldea";
     var center;
     if (view === "cuartel") center = troopsView();
+    else if (view === "mapa") center = mapView();
     else if (view === "mercado") center = marketView();
     else if (view === "raza") center = raceView();
     else if (view === "admin" && session && session.isAdmin) center = adminView();
@@ -4172,12 +4173,7 @@
     Array.prototype.forEach.call(app.querySelectorAll("[data-view]"), function (button) {
       button.addEventListener("click", function () {
         view = button.getAttribute("data-view");
-      if (button.getAttribute("data-view") === "mapa") {
-        view = "aldea";
-        renderGame();
-        return;
-      }
-      if (view === "mapa") { view = "aldea"; }
+      // mapa disponible
       if (view === "mercado" && isCloud()) {
         syncMarket().then(function () {
           if (view === "mercado") renderGame();

@@ -6,7 +6,6 @@
   var SESSION_KEY = "wowimperial:session";
   var SETTINGS_KEY = "wowimperial:settings";
   var MAX_OFFLINE_MINUTES = 8 * 60;
-  var GATHER_COOLDOWN_MS = 30 * 1000;
   var SAVE_EVERY_MS = 8000;
 
   var SUPABASE_URL = "https://dxsxdswyhdjzykuscqko.supabase.co";
@@ -29,7 +28,6 @@
       desc:
         "Tus tropas golpean más fuerte y resisten más, pero tus trabajadores producen recursos más despacio.",
       prod: 0.8,
-      gather: 1.0,
       atk: 1.25,
       def: 1.25,
       hp: 1.25,
@@ -43,7 +41,6 @@
       desc:
         "Sin extremos: tropas competentes y una economía estable. La opción más flexible para empezar.",
       prod: 1.0,
-      gather: 1.0,
       atk: 1.0,
       def: 1.0,
       hp: 1.0,
@@ -57,7 +54,6 @@
       desc:
         "Tus tropas son más frágiles en combate, pero extraes y generas muchísimos más recursos por minuto.",
       prod: 1.25,
-      gather: 1.35,
       atk: 0.8,
       def: 0.8,
       hp: 0.8,
@@ -147,7 +143,6 @@
   };
 
   var QUEUE_LIMIT = 4;
-  var DAILY_COOLDOWN_MS = 20 * 60 * 60 * 1000;
 
   var app = document.getElementById("app");
   var session = null;
@@ -310,7 +305,6 @@
       race: raceId,
       createdAt: t,
       lastTick: t,
-      lastGather: 0,
       res: res,
       buildings: {
         ayuntamiento: 1,
@@ -323,7 +317,6 @@
       },
       troops: { lanceros: 6, arqueros: 2, jinetes: 0 },
       campsCleared: 0,
-      lastDaily: 0,
       buildQueue: [],
       trainQueue: [],
       map: { camps: {}, village: null },
@@ -341,8 +334,6 @@
     s.troops = Object.assign({}, base.troops, s.troops || {});
     s.log = Array.isArray(s.log) ? s.log : [];
     s.campsCleared = Number(s.campsCleared || 0);
-    s.lastGather = Number(s.lastGather || 0);
-    s.lastDaily = Number(s.lastDaily || 0);
     s.buildQueue = Array.isArray(s.buildQueue) ? s.buildQueue : [];
     s.trainQueue = Array.isArray(s.trainQueue) ? s.trainQueue : [];
     s.map = s.map && typeof s.map === "object" ? s.map : { camps: {}, village: null };
@@ -826,7 +817,6 @@
                 '<div class="balance-row"><span>Defensa</span><b>x' + race.def.toFixed(2) + "</b></div>" +
                 '<div class="balance-row"><span>Vida</span><b>x' + race.hp.toFixed(2) + "</b></div>" +
                 '<div class="balance-row"><span>Producción/min</span><b>x' + race.prod.toFixed(2) + "</b></div>" +
-                '<div class="balance-row"><span>Recolección</span><b>x' + race.gather.toFixed(2) + "</b></div>" +
               "</div>" +
               '<button class="btn-primary" data-pick-race="' + race.id + '">Jugar como ' + race.name + "</button>" +
             "</div>" +
@@ -969,28 +959,6 @@
     if (!processQueues()) {
       updateTimers();
     }
-    var gatherButton = document.getElementById("gather-btn");
-    if (gatherButton) {
-      var left = Math.ceil((GATHER_COOLDOWN_MS - (t - state.lastGather)) / 1000);
-      if (left > 0) {
-        gatherButton.disabled = true;
-        gatherButton.textContent = "Recolectar en " + left + "s";
-      } else {
-        gatherButton.disabled = false;
-        gatherButton.textContent = "Recolectar recursos";
-      }
-    }
-    var dailyButton = document.getElementById("daily-btn");
-    if (dailyButton) {
-      var dailyLeft = DAILY_COOLDOWN_MS - (t - (state.lastDaily || 0));
-      if (dailyLeft > 0) {
-        dailyButton.disabled = true;
-        dailyButton.textContent = "Bonus diario en " + formatDuration(dailyLeft);
-      } else {
-        dailyButton.disabled = false;
-        dailyButton.textContent = "Reclamar bonus diario";
-      }
-    }
   }
 
   function formatDuration(ms) {
@@ -1021,43 +989,6 @@
         progressNode.style.width = pct.toFixed(1) + "%";
       }
     });
-  }
-
-  function claimDaily() {
-    if (!state) return;
-    var t = now();
-    if (t - (state.lastDaily || 0) < DAILY_COOLDOWN_MS) return;
-    state.lastDaily = t;
-    var prod = totalProduction(state);
-    var limit = storageLimit(state.buildings);
-    var gained = 0;
-    RESOURCES.forEach(function (res) {
-      var bonus = prod[res] * 60;
-      var applied = Math.min(bonus, Math.max(0, limit - state.res[res]));
-      state.res[res] += applied;
-      gained += applied;
-    });
-    addLog("Bonus diario reclamado: +" + num(gained) + " recursos.", "good");
-    saveGame();
-    renderGame();
-  }
-
-  function gather() {
-    if (!state) return;
-    var t = now();
-    if (t - state.lastGather < GATHER_COOLDOWN_MS) return;
-    state.lastGather = t;
-    var race = RACES[state.race];
-    var limit = storageLimit(state.buildings);
-    var total = 0;
-    RESOURCES.forEach(function (res) {
-      var gain = Math.round(30 * race.gather);
-      var applied = Math.min(gain, Math.max(0, limit - state.res[res]));
-      state.res[res] += applied;
-      total += applied;
-    });
-    addLog("Recolectaste " + num(total) + " recursos con tus trabajadores.", "good");
-    renderGame();
   }
 
   function upgradeBuilding(key) {
@@ -1187,12 +1118,8 @@
             '<div class="info-line kb-line"><span>KB · moneda del rey</span><b id="kb-line">' +
               num((session && session.kb) || 0) + "</b></div>" +
             '<div class="mini-note">La KB no se produce: solo el administrador puede entregártela.</div>' +
-            '<button class="btn" id="gather-btn">Recolectar recursos</button>' +
-            '<button class="btn" id="daily-btn">Reclamar bonus diario</button>' +
-            '<div class="mini-note">Velocidad de recursos del reino: <b>x' + resourceSpeed().toFixed(2) +
-              "</b>. Recolectar da <b>" + Math.round(30 * race.gather) +
-              "</b> de cada recurso cada 30s (bonus de raza x" + race.gather.toFixed(2) +
-              "). El bonus diario entrega 1 minuto de producción por recurso cada 20h.</div>" +
+            '<div class="mini-note">Los recursos se guardan automáticamente en el almacén. ' +
+              "Velocidad de recursos del reino: <b>x" + resourceSpeed().toFixed(2) + "</b>.</div>" +
           "</div>" +
         "</div>" +
       "</aside>"
@@ -3892,7 +3819,6 @@
             '<div class="balance-row"><span>Defensa de tropas</span><b>x' + race.def.toFixed(2) + "</b></div>" +
             '<div class="balance-row"><span>Vida de tropas</span><b>x' + race.hp.toFixed(2) + "</b></div>" +
             '<div class="balance-row"><span>Producción de recursos</span><b>x' + race.prod.toFixed(2) + "</b></div>" +
-            '<div class="balance-row"><span>Recolección</span><b>x' + race.gather.toFixed(2) + "</b></div>" +
             '<div class="balance-row"><span>Almacenamiento</span><b>' + num(storageLimit(state.buildings)) + "</b></div>" +
           "</div>" +
           '<div class="mini-note">La raza se elige al crear la cuenta y no puede cambiarse. ' +
@@ -4245,10 +4171,6 @@
     });
     var logoutBtn = document.getElementById("logout-btn");
     if (logoutBtn) logoutBtn.addEventListener("click", logout);
-    var gatherBtn = document.getElementById("gather-btn");
-    if (gatherBtn) gatherBtn.addEventListener("click", gather);
-    var dailyBtn = document.getElementById("daily-btn");
-    if (dailyBtn) dailyBtn.addEventListener("click", claimDaily);
     Array.prototype.forEach.call(app.querySelectorAll("[data-upgrade]"), function (button) {
       button.addEventListener("click", function () {
         upgradeBuilding(button.getAttribute("data-upgrade"));

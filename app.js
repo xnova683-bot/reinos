@@ -2645,7 +2645,7 @@
       if (world.settings && world.settings["map_region_" + region.id]) {
         return world.settings["map_region_" + region.id];
       }
-      return "./assets/region-" + region.id + ".jpg";
+      return "./assets/region-all.jpg";
     }
     return (world.settings && world.settings.map) || "./assets/map.jpg";
   }

@@ -2646,9 +2646,9 @@
       if (world.settings && world.settings["map_region_" + region.id]) {
         return world.settings["map_region_" + region.id];
       }
-      return "./assets/region-new.jpg";
+      return "./assets/map.jpg";
     }
-    return "./assets/map-world.jpg";
+    return (world.settings && world.settings.map) || "./assets/map.jpg";
   }
 
   function saveRoadBend(regionId, key, t, x, y) {

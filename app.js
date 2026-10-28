@@ -3988,6 +3988,10 @@
         villagers() +
       "</main>";
 
+    if (document && document.body) {
+      document.body.classList.remove("race-alianza", "race-horda", "race-enanos");
+      document.body.classList.add("race-" + state.race);
+    }
     bindGameEvents();
     refreshNumbers();
     updateTimers();

@@ -651,6 +651,22 @@ input {
   overflow: hidden;
 }
 
+body.race-horda .map {
+  background:
+    linear-gradient(180deg, rgba(12, 10, 16, 0.42), rgba(12, 10, 16, 0.76)),
+    radial-gradient(circle at 50% 35%, rgba(216, 189, 82, 0.16), transparent 62%),
+    url("./assets/map-card-horde.jpg") center / cover no-repeat,
+    #100e15;
+}
+
+body.race-enanos .map {
+  background:
+    linear-gradient(180deg, rgba(12, 10, 16, 0.42), rgba(12, 10, 16, 0.76)),
+    radial-gradient(circle at 50% 35%, rgba(216, 189, 82, 0.16), transparent 62%),
+    url("./assets/map-card-enanos.jpg") center / cover no-repeat,
+    #100e15;
+}
+
 .map .map-title {
   font-family: "Cinzel", serif;
   letter-spacing: 0.36em;

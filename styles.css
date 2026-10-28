@@ -390,6 +390,7 @@ input {
 
 .menu {
   position: relative;
+  order: -1;
 }
 
 .menu-toggle {
@@ -431,7 +432,7 @@ input {
 
 .menu-panel {
   position: absolute;
-  right: 0;
+  left: 0;
   top: calc(100% + 0.55rem);
   z-index: 40;
   display: flex;

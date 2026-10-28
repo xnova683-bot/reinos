@@ -520,8 +520,15 @@ begin
       jitter := ('x' || substr(md5(new.id::text), 1, 8))::bit(32)::bigint % 1000;
 
       new.region_id := reg.id;
-      new.x := bx + bw * (0.25 + (slot % 5) * 0.125) + ((jitter % 5) - 2) * bw * 0.01;
-      new.y := oy + bh * (0.25 + ((slot / 5) % 5) * 0.125) + (((jitter / 5) % 5) - 2) * bh * 0.01;
+      select c.x, c.y into new.x, new.y from public.castles c where c.region_id = reg.id limit 1;
+      if new.x is null then
+        new.x := bx + bw * 0.5;
+        new.y := oy + bh * 0.5;
+      end if;
+      new.x := new.x + ((slot % 5) - 2) * bw * 0.055 + ((jitter % 3) - 1) * bw * 0.015;
+      new.y := new.y + (floor(slot / 5) - 2) * bh * 0.055 + (((jitter / 3) % 3) - 1) * bh * 0.015;
+      new.x := least(0.99, greatest(0.01, new.x));
+      new.y := least(0.99, greatest(0.01, new.y));
     end if;
   end if;
 

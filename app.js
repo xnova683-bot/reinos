@@ -2637,7 +2637,16 @@
     replaceRoadSvg(roadNetwork(currentRoadPoints, bends, currentRoadLinks).svg);
   }
 
-  function mapImageUrl() {
+  function mapImageUrl(region) {
+    if (region) {
+      if (region.map_image) return region.map_image;
+      if (region.image) return region.image;
+      if (region.background) return region.background;
+      if (world.settings && world.settings["map_region_" + region.id]) {
+        return world.settings["map_region_" + region.id];
+      }
+      return "./assets/region-" + region.id + ".jpg";
+    }
     return (world.settings && world.settings.map) || "./assets/map.jpg";
   }
 
@@ -3234,7 +3243,7 @@
           '<div class="worldmap-stage' + (open ? " labels" : "") + '" id="worldmap-stage" ' +
             'style="width:' + MAP_W + "px;height:" + MAP_H + 'px">' +
             '<div class="map-bg" aria-hidden="true"></div>' +
-            '<img class="map-image" src="' + escapeHtml(mapImageUrl()) + '" alt="" draggable="false" ' +
+            '<img class="map-image" src="' + escapeHtml(mapImageUrl(open)) + '" alt="" draggable="false" ' +
               'onerror="this.style.display=\'none\'" />' +
             layer +
           "</div>" +

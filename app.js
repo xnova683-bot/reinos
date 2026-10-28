@@ -3723,6 +3723,7 @@
         npcTarget = null;
         castleTarget = null;
         pvpResult = null;
+        if (view !== "mapa") view = "mapa";
         renderGame();
       });
     });
@@ -3734,6 +3735,7 @@
         if (!region) return;
         openRegionId = region;
         mapFocusedRegion = null;
+        if (view !== "mapa") view = "mapa";
         renderGame();
       });
     });
@@ -3743,6 +3745,7 @@
       openRegionId = null;
       mapFocusedRegion = null;
       regionHintId = null;
+      if (view === "mapa") { view = "aldea"; }
       pvpTarget = null;
       npcTarget = null;
       castleTarget = null;

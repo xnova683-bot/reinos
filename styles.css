@@ -388,6 +388,95 @@ input {
   border-color: rgba(216, 189, 82, 0.35);
 }
 
+.menu {
+  position: relative;
+}
+
+.menu-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  list-style: none;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0.42rem 0.85rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.menu-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.menu-toggle::after {
+  content: "▾";
+  color: var(--gold);
+  font-size: 0.75rem;
+  transition: transform 0.15s ease;
+}
+
+.menu[open] .menu-toggle {
+  border-color: rgba(216, 189, 82, 0.45);
+  background: rgba(216, 189, 82, 0.12);
+}
+
+.menu[open] .menu-toggle::after {
+  transform: rotate(180deg);
+}
+
+.menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.55rem);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 240px;
+  max-width: calc(100vw - 1.4rem);
+  padding: 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(22, 21, 28, 0.98);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+}
+
+.menu-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.menu .tab {
+  width: 100%;
+  text-align: left;
+  border-radius: 8px;
+  padding: 0.55rem 0.75rem;
+}
+
+.menu-account {
+  margin-top: 0.2rem;
+  padding: 0.55rem 0.75rem 0.1rem;
+  border-top: 1px solid var(--border);
+  color: var(--text-sub);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-logout {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+}
+
 .userbox {
   display: flex;
   align-items: center;
@@ -1365,18 +1454,23 @@ input {
 }
 
 .march-pin {
-  width: 15px;
-  height: 15px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
   border-radius: 50%;
-  border: 2px solid #0b0a10;
-  background: #e0b36a;
+  border: 2px solid #e0b36a;
+  background: rgba(12, 10, 18, 0.9);
+  font-size: 12px;
+  line-height: 1;
   box-shadow: 0 0 0 3px rgba(224, 179, 106, 0.2), 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
-.march-marker.horda .march-pin { background: #c4544a; }
-.march-marker.alianza .march-pin { background: #4a7ec4; }
-.march-marker.enanos .march-pin { background: #c4a24a; }
+.march-marker.horda .march-pin { border-color: #c4544a; }
+.march-marker.alianza .march-pin { border-color: #4a7ec4; }
+.march-marker.enanos .march-pin { border-color: #c4a24a; }
 .march-marker.own .march-pin {
+  border-color: #9fd8b2;
   box-shadow: 0 0 0 4px rgba(159, 216, 178, 0.28), 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 .march-marker.returning .march-pin {

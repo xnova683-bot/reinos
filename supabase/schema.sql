@@ -808,7 +808,12 @@ begin
   select * into d from public.profiles where id = target_id for update;
   if not found then raise exception 'target not found'; end if;
 
-  if exists (select 1 from public.regions rg where rg.id in (a.region_id, d.region_id) and rg.locked) then
+  if exists (
+    select 1 from public.regions rg
+    where rg.id = d.region_id
+      and rg.locked
+      and rg.id is distinct from a.region_id
+  ) then
     raise exception 'region locked';
   end if;
 
@@ -981,7 +986,12 @@ begin
   select * into n from public.npcs where id = npc_id;
   if not found then raise exception 'npc not found'; end if;
 
-  if exists (select 1 from public.regions rg where rg.id = n.region_id and rg.locked) then
+  if exists (
+    select 1 from public.regions rg
+    where rg.id = n.region_id
+      and rg.locked
+      and rg.id is distinct from a.region_id
+  ) then
     raise exception 'region locked';
   end if;
 
@@ -1114,7 +1124,12 @@ begin
   select * into c from public.castles where id = castle_id for update;
   if not found then raise exception 'castle not found'; end if;
 
-  if exists (select 1 from public.regions rg where rg.id = c.region_id and rg.locked) then
+  if exists (
+    select 1 from public.regions rg
+    where rg.id = c.region_id
+      and rg.locked
+      and rg.id is distinct from a.region_id
+  ) then
     raise exception 'region locked';
   end if;
 
@@ -1422,7 +1437,9 @@ begin
   if target_x is null or target_y is null then raise exception 'target not found'; end if;
   if exists (
     select 1 from public.regions r
-    where r.id in (a.region_id, target_region) and r.locked
+    where r.id = target_region
+      and r.locked
+      and r.id is distinct from a.region_id
   ) then raise exception 'region locked'; end if;
 
   select coalesce(least(10, greatest(0.1, s.movement_speed)), 1)
@@ -1764,6 +1781,8 @@ begin
   dx := least(0.995 - maxx, greatest(0.005 - minx, dx));
   dy := least(0.995 - maxy, greatest(0.005 - miny, dy));
 
+  minx := 2; maxx := -1;
+  miny := 2; maxy := -1;
   for pt in select value from jsonb_array_elements(pts) loop
     nx := (pt->>0)::numeric + dx;
     ny := (pt->>1)::numeric + dy;
@@ -1848,6 +1867,36 @@ $fn$;
 
 grant execute on function public.region_at(numeric, numeric) to authenticated;
 
+create or replace function public.region_for_point(px numeric, py numeric)
+returns integer
+language sql
+stable
+as $fn$
+  select coalesce(
+    public.region_at(px, py),
+    (
+      select r.id
+      from public.regions r
+      order by
+        power(greatest(
+          (r.bbox->>'x0')::numeric - px,
+          px - (r.bbox->>'x1')::numeric,
+          0
+        ), 2) + power(greatest(
+          (r.bbox->>'y0')::numeric - py,
+          py - (r.bbox->>'y1')::numeric,
+          0
+        ), 2),
+        power(px - (((r.bbox->>'x0')::numeric + (r.bbox->>'x1')::numeric) / 2), 2) +
+        power(py - (((r.bbox->>'y0')::numeric + (r.bbox->>'y1')::numeric) / 2), 2),
+        r.id
+      limit 1
+    )
+  );
+$fn$;
+
+grant execute on function public.region_for_point(numeric, numeric) to authenticated;
+
 create or replace function public.admin_move_village(target_id uuid, nx numeric, ny numeric)
 returns jsonb
 language plpgsql
@@ -1857,12 +1906,17 @@ as $fn$
 declare
   px numeric := least(0.995, greatest(0.005, nx));
   py numeric := least(0.995, greatest(0.005, ny));
+  rid integer := public.region_for_point(
+    least(0.995, greatest(0.005, nx)),
+    least(0.995, greatest(0.005, ny))
+  );
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
 
   update public.profiles
     set x = px,
-        y = py
+        y = py,
+        region_id = rid
     where id = target_id;
   if not found then raise exception 'village not found'; end if;
   return jsonb_build_object('ok', true);
@@ -2036,12 +2090,17 @@ as $fn$
 declare
   px numeric := least(0.995, greatest(0.005, nx));
   py numeric := least(0.995, greatest(0.005, ny));
+  rid integer := public.region_for_point(
+    least(0.995, greatest(0.005, nx)),
+    least(0.995, greatest(0.005, ny))
+  );
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
 
   update public.npcs
     set x = px,
         y = py,
+        region_id = rid,
         updated_at = now()
   where id = target_id;
   if not found then raise exception 'npc not found'; end if;
@@ -2050,6 +2109,43 @@ end;
 $fn$;
 
 grant execute on function public.admin_move_npc(uuid, numeric, numeric) to authenticated;
+
+-- Repara cajas de región y asignaciones antiguas sin mover aldeas.
+do $repair$
+begin
+  update public.regions r
+    set bbox = b.bbox,
+        updated_at = now()
+  from (
+    select r2.id,
+      jsonb_build_object(
+        'x0', min((pt->>0)::numeric),
+        'y0', min((pt->>1)::numeric),
+        'x1', max((pt->>0)::numeric),
+        'y1', max((pt->>1)::numeric)
+      ) as bbox
+    from public.regions r2
+    cross join lateral jsonb_array_elements(r2.points) as pt
+    group by r2.id
+  ) b
+  where r.id = b.id
+    and r.bbox is distinct from b.bbox;
+
+  update public.profiles p
+    set region_id = public.region_for_point(p.x, p.y)
+  where p.x is not null
+    and p.y is not null
+    and not coalesce(p.is_admin, false)
+    and p.region_id is distinct from public.region_for_point(p.x, p.y);
+
+  update public.npcs n
+    set region_id = public.region_for_point(n.x, n.y)
+  where n.x is not null
+    and n.y is not null
+    and n.region_id is distinct from public.region_for_point(n.x, n.y);
+
+end;
+$repair$;
 
 create or replace function public.admin_grant_kb(target_id uuid, amount bigint)
 returns jsonb

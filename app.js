@@ -1409,6 +1409,7 @@
   var mapFocusedRegion = null;
   var currentRoadNetwork = null;
   var currentRoadPoints = null;
+  var currentRoadLinks = [];
   var currentRoadBends = {};
   var currentRoadRegionId = null;
   var regionHintId = null;
@@ -1421,6 +1422,7 @@
   var marchSyncTimer = null;
   var marchLastCull = 0;
   var seenExpeditionResults = {};
+  var expeditionRoadCache = {};
 
   function isCloud() {
     return !!(session && session.mode === "cloud" && session.token);
@@ -1449,6 +1451,7 @@
         world.castles = Array.isArray(data.castles) ? data.castles : [];
         world.roadBends = Array.isArray(data.road_bends) ? data.road_bends : [];
         world.expeditions = Array.isArray(data.expeditions) ? data.expeditions : [];
+        expeditionRoadCache = {};
         world.online = Number(data.online || 0);
         world.speed = Number(data.speed || 1);
         world.moveSpeed = Number(data.move_speed || 1);
@@ -1464,6 +1467,16 @@
           session.isAdmin = !!world.me.admin;
           if (world.me.kb != null) session.kb = Number(world.me.kb);
           session.region = world.me.region;
+          if (!session.isAdmin) {
+            var self = null;
+            world.players.forEach(function (player) {
+              if (!self && String(player.id) === String(session.userId)) self = player;
+            });
+            if (self && typeof self.x === "number" && typeof self.y === "number") {
+              session.village = { x: Number(self.x), y: Number(self.y) };
+              session.region = self.region;
+            }
+          }
           writeJSON(SESSION_KEY, session);
         }
         if (session && !!session.isAdmin !== wasAdmin) renderGame();
@@ -2090,7 +2103,7 @@
     return links;
   }
 
-  function roadNetwork(points, bends) {
+  function roadNetwork(points, bends, extraLinks) {
     if (!points || points.length < 3) return { svg: "", segments: [] };
     var loops = roadLoops(points);
     if (!loops.length) return { svg: "", segments: [] };
@@ -2114,7 +2127,8 @@
       });
     });
 
-    roadLinkPairs(loops, geometries).forEach(function (link) {
+    var links = roadLinkPairs(loops, geometries).concat(extraLinks || []);
+    links.forEach(function (link) {
       var geometry = roadLinkGeometry(link.a, link.b, link.seed, bends);
       if (!geometry) return;
       casings.push('<path class="road-casing" d="' + geometry.d + '"></path>');
@@ -2203,6 +2217,301 @@
     );
   }
 
+  function regionRouteIds(from, to) {
+    var route = [];
+    var fromId = Number(from);
+    var toId = Number(to);
+    if (!isFinite(fromId) || !isFinite(toId)) return route;
+    route.push(fromId);
+    var col = (fromId - 1) % 5;
+    var row = Math.floor((fromId - 1) / 5);
+    var targetCol = (toId - 1) % 5;
+    var targetRow = Math.floor((toId - 1) / 5);
+    var guard = 0;
+    while ((col !== targetCol || row !== targetRow) && guard++ < 50) {
+      if (col !== targetCol) col += targetCol > col ? 1 : -1;
+      else row += targetRow > row ? 1 : -1;
+      route.push(row * 5 + col + 1);
+    }
+    return route;
+  }
+
+  function expeditionPointKey(expedition, side) {
+    if (!expedition) return "";
+    if (side === "origin") {
+      var own = session && String(expedition.attacker) === String(session.userId);
+      return (own ? "s:" : "p:") + expedition.attacker;
+    }
+    if (expedition.target_type === "npc") return "n:" + expedition.target_id;
+    if (expedition.target_type === "castle") return "c:" + expedition.target_id;
+    return "p:" + expedition.target_id;
+  }
+
+  function regionRoadPoints(region, extras, includePortal) {
+    var points = [];
+    if (!region) return points;
+    var selfId = session && session.userId ? String(session.userId) : "";
+    world.players.forEach(function (player) {
+      if (String(player.id) === selfId) return;
+      if (String(player.region) !== String(region.id)) return;
+      if (typeof player.x !== "number" || typeof player.y !== "number") return;
+      points.push({ x: Number(player.x), y: Number(player.y), key: "p:" + player.id });
+    });
+    world.npcs.forEach(function (npc) {
+      if (String(npc.region) !== String(region.id)) return;
+      if (typeof npc.x !== "number" || typeof npc.y !== "number") return;
+      points.push({ x: Number(npc.x), y: Number(npc.y), key: "n:" + npc.id });
+    });
+    var castle = castleOf(region.id);
+    if (castle && typeof castle.x === "number" && typeof castle.y === "number") {
+      points.push({ x: Number(castle.x), y: Number(castle.y), key: "c:" + castle.id });
+    }
+    var mePos = session && session.village ? session.village : null;
+    if (mePos && (String(session.region) === String(region.id) || pointInRegion(region, mePos))) {
+      points.push({ x: Number(mePos.x), y: Number(mePos.y), key: "s:" + selfId });
+    }
+    var portal = includePortal === false ? null : regionPortal(region);
+    if (portal) points.push({ x: portal.x, y: portal.y, key: portal.key });
+    (extras || []).forEach(function (extra) {
+      if (!extra) return;
+      var key = roadPointKey(extra);
+      var replaced = false;
+      for (var i = 0; i < points.length; i++) {
+        if (roadPointKey(points[i]) === key) {
+          points[i] = extra;
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) points.push(extra);
+    });
+    return points;
+  }
+
+  function regionCityPoints(region, extras) {
+    return regionRoadPoints(region, extras, false);
+  }
+
+  function nearestRoadPoint(points, target) {
+    var best = null;
+    var bestDist = Infinity;
+    (points || []).forEach(function (point) {
+      if (!point || !isFinite(Number(point.x)) || !isFinite(Number(point.y))) return;
+      var dist = roadDistanceSq(point, target);
+      var key = roadPointKey(point);
+      if (dist < bestDist - 1e-9 ||
+          (Math.abs(dist - bestDist) <= 1e-9 && best && key < roadPointKey(best))) {
+        best = point;
+        bestDist = dist;
+      }
+    });
+    return best;
+  }
+
+  function regionPortalAnchor(region, extras) {
+    var portal = regionPortal(region);
+    if (!portal) return null;
+    return nearestRoadPoint(regionCityPoints(region, extras), portal);
+  }
+
+  function regionRoadSeed(regionId) {
+    return Number(regionId) * 31 + 7;
+  }
+
+  function regionRoadLinks(region, points) {
+    var portal = regionPortal(region);
+    var anchor = portal ? nearestRoadPoint(points, portal) : null;
+    if (!portal || !anchor) return [];
+    return [{ a: anchor, b: portal, seed: regionRoadSeed(region.id) }];
+  }
+
+  function appendRoadSegment(out, segment, reverse) {
+    if (!segment) return;
+    var steps = 18;
+    for (var i = 0; i <= steps; i++) {
+      var t = reverse ? 1 - i / steps : i / steps;
+      var point = roadCurvePoint(segment, t);
+      if (out.length) {
+        var last = out[out.length - 1];
+        if (Math.abs(last.x - point.x) < 1e-7 && Math.abs(last.y - point.y) < 1e-7) continue;
+      }
+      out.push({ x: point.x, y: point.y });
+    }
+  }
+
+  function appendPolyline(out, points) {
+    (points || []).forEach(function (point) {
+      if (!point || !isFinite(Number(point.x)) || !isFinite(Number(point.y))) return;
+      var next = { x: Number(point.x), y: Number(point.y) };
+      if (out.length) {
+        var last = out[out.length - 1];
+        if (Math.abs(last.x - next.x) < 1e-7 && Math.abs(last.y - next.y) < 1e-7) return;
+      }
+      out.push(next);
+    });
+  }
+
+  function roadGraphPath(regionId, startKey, endKey, extras) {
+    var region = regionById(regionId);
+    if (!region || !startKey || !endKey || startKey === endKey) return null;
+    var points = regionCityPoints(region, extras);
+    var net = roadNetwork(points, roadBendsForRegion(regionId));
+    if (!net.segments.length) return null;
+
+    var edges = {};
+    net.segments.forEach(function (segment) {
+      var a = roadPointKey(segment.a);
+      var b = roadPointKey(segment.b);
+      if (!edges[a]) edges[a] = [];
+      if (!edges[b]) edges[b] = [];
+      var cost = Math.hypot(
+        (segment.b.x - segment.a.x) * MAP_W,
+        (segment.b.y - segment.a.y) * MAP_H
+      );
+      edges[a].push({ to: b, segment: segment, reverse: false, cost: cost });
+      edges[b].push({ to: a, segment: segment, reverse: true, cost: cost });
+    });
+    if (!edges[startKey] || !edges[endKey]) return null;
+
+    var dist = {};
+    var prev = {};
+    var used = {};
+    dist[startKey] = 0;
+    for (;;) {
+      var current = null;
+      var best = Infinity;
+      for (var key in dist) {
+        if (used[key] || dist[key] >= best) continue;
+        best = dist[key];
+        current = key;
+      }
+      if (!current || current === endKey) break;
+      used[current] = true;
+      edges[current].forEach(function (edge) {
+        if (used[edge.to]) return;
+        var next = best + edge.cost;
+        if (dist[edge.to] === undefined || next < dist[edge.to]) {
+          dist[edge.to] = next;
+          prev[edge.to] = { from: current, segment: edge.segment, reverse: edge.reverse };
+        }
+      });
+    }
+    if (dist[endKey] === undefined) return null;
+
+    var chain = [];
+    var at = endKey;
+    while (at !== startKey) {
+      var step = prev[at];
+      if (!step) return null;
+      chain.push(step);
+      at = step.from;
+    }
+    chain.reverse();
+    var out = [];
+    chain.forEach(function (step) {
+      appendRoadSegment(out, step.segment, step.reverse);
+    });
+    return out.length ? out : null;
+  }
+
+  function worldRoadPath(fromId, toId) {
+    var low = Math.min(Number(fromId), Number(toId));
+    var high = Math.max(Number(fromId), Number(toId));
+    var lowPortal = regionPortal(regionById(low));
+    var highPortal = regionPortal(regionById(high));
+    if (!lowPortal || !highPortal) return null;
+    var geometry = roadLinkGeometry(lowPortal, highPortal, low * 19 + high * 7, {});
+    if (!geometry) return null;
+    var out = [];
+    geometry.segments.forEach(function (segment) {
+      appendRoadSegment(out, segment, false);
+    });
+    if (Number(fromId) > Number(toId)) out.reverse();
+    return out.length ? out : null;
+  }
+
+  function regionSpurGeometry(region, anchor) {
+    var portal = regionPortal(region);
+    if (!portal || !anchor) return null;
+    return roadLinkGeometry(
+      anchor,
+      portal,
+      regionRoadSeed(region.id),
+      roadBendsForRegion(region.id)
+    );
+  }
+
+  function appendRoadGeometry(out, geometry, reverse) {
+    if (!geometry || !geometry.segments || !geometry.segments.length) return false;
+    if (reverse) {
+      for (var i = geometry.segments.length - 1; i >= 0; i--) {
+        appendRoadSegment(out, geometry.segments[i], true);
+      }
+    } else {
+      geometry.segments.forEach(function (segment) {
+        appendRoadSegment(out, segment, false);
+      });
+    }
+    return true;
+  }
+
+  function expeditionRoadPoints(expedition) {
+    var cacheKey = expedition && expedition.id ? String(expedition.id) : "";
+    if (cacheKey && expeditionRoadCache[cacheKey]) return expeditionRoadCache[cacheKey];
+    var fallback = expeditionPathPoints(expedition);
+    var fromRegion = Number(expedition && expedition.from_region);
+    var toRegion = Number(expedition && expedition.to_region);
+    if (!isFinite(fromRegion) || !isFinite(toRegion)) return fallback;
+    var fromRegionObj = regionById(fromRegion);
+    var toRegionObj = regionById(toRegion);
+    if (!fromRegionObj || !toRegionObj) return fallback;
+    var origin = {
+      x: Number(expedition.from_x),
+      y: Number(expedition.from_y),
+      key: expeditionPointKey(expedition, "origin"),
+    };
+    var target = {
+      x: Number(expedition.to_x),
+      y: Number(expedition.to_y),
+      key: expeditionPointKey(expedition, "target"),
+    };
+    if (!isFinite(origin.x) || !isFinite(origin.y) || !isFinite(target.x) || !isFinite(target.y)) {
+      return fallback;
+    }
+
+    if (fromRegion === toRegion) {
+      var local = roadGraphPath(fromRegion, origin.key, target.key, [origin, target]);
+      if (!local || local.length < 2) return fallback;
+      if (cacheKey) expeditionRoadCache[cacheKey] = local;
+      return local;
+    }
+
+    var route = regionRouteIds(fromRegion, toRegion);
+    var fromPortal = regionPortal(fromRegionObj);
+    var toPortal = regionPortal(toRegionObj);
+    var fromAnchor = regionPortalAnchor(fromRegionObj, [origin]);
+    var toAnchor = regionPortalAnchor(toRegionObj, [target]);
+    if (!route.length || !fromPortal || !toPortal || !fromAnchor || !toAnchor) return fallback;
+
+    var out = [];
+    var head = roadGraphPath(fromRegion, origin.key, fromAnchor.key, [origin]);
+    if (origin.key !== fromAnchor.key && (!head || head.length < 2)) return fallback;
+    appendPolyline(out, head || [origin]);
+    if (!appendRoadGeometry(out, regionSpurGeometry(fromRegionObj, fromAnchor), false)) return fallback;
+    for (var i = 0; i < route.length - 1; i++) {
+      var link = worldRoadPath(route[i], route[i + 1]);
+      if (!link) return fallback;
+      appendPolyline(out, link);
+    }
+    if (!appendRoadGeometry(out, regionSpurGeometry(toRegionObj, toAnchor), true)) return fallback;
+    var tail = roadGraphPath(toRegion, toAnchor.key, target.key, [target]);
+    if (toAnchor.key !== target.key && (!tail || tail.length < 2)) return fallback;
+    appendPolyline(out, tail || [target]);
+    if (out.length < 2) return fallback;
+    if (cacheKey) expeditionRoadCache[cacheKey] = out;
+    return out;
+  }
+
   function expeditionPathPoints(expedition) {
     if (!expedition || !Array.isArray(expedition.path)) return [];
     return expedition.path.filter(function (point) {
@@ -2222,7 +2531,7 @@
   }
 
   function expeditionRouteSvg(expedition) {
-    var points = expeditionPathPoints(expedition);
+    var points = expeditionRoadPoints(expedition);
     if (points.length < 2) return "";
     var d = expeditionPathD(points);
     var own = session && String(expedition.attacker) === String(session.userId);
@@ -2236,7 +2545,7 @@
   }
 
   function expeditionMarkers(expedition) {
-    var points = expeditionPathPoints(expedition);
+    var points = expeditionRoadPoints(expedition);
     if (!points.length) return "";
     var first = points[0];
     var own = session && String(expedition.attacker) === String(session.userId);
@@ -2246,7 +2555,7 @@
         escapeHtml(String(expedition.id)) + '" data-mx="' + first.x.toFixed(5) + '" data-my="' +
         first.y.toFixed(5) + '" style="left:' + (first.x * 100).toFixed(2) + "%;top:" +
         (first.y * 100).toFixed(2) + '%">' +
-        '<span class="march-pin"></span>' +
+        '<span class="march-pin" aria-hidden="true">\u2694\ufe0f</span>' +
         '<span class="march-label">' + escapeHtml(expedition.attacker_name || "Marcha") +
           " · " + escapeHtml(expedition.target_name || "objetivo") + "</span>" +
       "</div>"
@@ -2360,7 +2669,7 @@
         } else {
           fraction = 1;
         }
-        var point = marchPointAt(expeditionPathPoints(expedition), fraction);
+        var point = marchPointAt(expeditionRoadPoints(expedition), fraction);
         if (!point) continue;
         if (node.style) {
           node.style.left = (point.x * 100).toFixed(2) + "%";
@@ -2428,7 +2737,7 @@
     if (!currentRoadPoints || !road || !road.target) return;
     var bends = copyRoadBends(currentRoadBends);
     bends[road.key] = { t: road.t, x: road.target.x, y: road.target.y };
-    replaceRoadSvg(roadNetwork(currentRoadPoints, bends).svg);
+    replaceRoadSvg(roadNetwork(currentRoadPoints, bends, currentRoadLinks).svg);
   }
 
   function mapImageUrl() {
@@ -2706,6 +3015,7 @@
   function mapView() {
     currentRoadNetwork = null;
     currentRoadPoints = null;
+    currentRoadLinks = [];
     currentRoadBends = {};
     currentRoadRegionId = null;
     var power = armyPower(state);
@@ -2776,27 +3086,16 @@
         return String(npc.region) === String(open.id) &&
           typeof npc.x === "number" && typeof npc.y === "number";
       });
-      var points = players.map(function (player) {
-        return { x: Number(player.x), y: Number(player.y), key: "p:" + player.id };
-      });
-      npcs.forEach(function (npc) {
-        points.push({ x: Number(npc.x), y: Number(npc.y), key: "n:" + npc.id });
-      });
       var castle = castleOf(open.id);
-      if (castle && typeof castle.x === "number" && typeof castle.y === "number") {
-        points.push({ x: Number(castle.x), y: Number(castle.y), key: "c:" + castle.id });
-      }
       var mineHere =
         !!meMarker &&
         (String(session.region) === String(open.id) || pointInRegion(open, mePos));
-      if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y), key: "s:" + session.userId });
-      var portal = regionPortal(open);
-      if (portal) points.push({ x: portal.x, y: portal.y, key: portal.key });
 
       currentRoadBends = roadBendsForRegion(open.id);
-      currentRoadPoints = points;
+      currentRoadPoints = regionCityPoints(open);
+      currentRoadLinks = regionRoadLinks(open, currentRoadPoints);
       currentRoadRegionId = open.id;
-      currentRoadNetwork = roadNetwork(points, currentRoadBends);
+      currentRoadNetwork = roadNetwork(currentRoadPoints, currentRoadBends, currentRoadLinks);
       layer = currentRoadNetwork.svg +
         expeditionOverlay(open) +
         mundoMarker(open) + (castle
@@ -3493,7 +3792,8 @@
         var id = point.getAttribute("data-region-point");
         var region = regionById(id);
         if (!region) return;
-        if (region.locked && !(session && session.isAdmin)) {
+        if (region.locked && !(session && session.isAdmin) &&
+            String(region.id) !== String(session && session.region)) {
           pvpResult = { ok: false, text: "Esa región está bloqueada por el administrador." };
           renderGame();
           return;
@@ -3755,19 +4055,22 @@
       '<div class="topbar">' +
         '<div class="brand">WoW Imperial <span class="dot">|</span> <span style="color:var(--' +
           race.id + ')">' + race.name + "</span></div>" +
-        '<div class="topnav">' +
-          tabs
-            .map(function (tab) {
-              return (
-                '<button class="tab' + (view === tab[0] ? " active" : "") + '" data-view="' + tab[0] + '">' + tab[1] + "</button>"
-              );
-            })
-            .join("") +
-        "</div>" +
-        '<div class="userbox">' +
-          '<span class="mail">' + escapeHtml(account || "") + "</span>" +
-          '<button class="btn" id="logout-btn" style="padding:0.35rem 0.7rem;font-size:0.78rem;">Salir</button>' +
-        "</div>" +
+        '<details class="menu" id="game-menu">' +
+          '<summary class="menu-toggle">Menú</summary>' +
+          '<div class="menu-panel">' +
+            '<div class="menu-nav">' +
+              tabs
+                .map(function (tab) {
+                  return (
+                    '<button class="tab' + (view === tab[0] ? " active" : "") + '" data-view="' + tab[0] + '">' + tab[1] + "</button>"
+                  );
+                })
+                .join("") +
+            "</div>" +
+            '<div class="menu-account">' + escapeHtml(account || "") + "</div>" +
+            '<button class="btn menu-logout" id="logout-btn">Salir</button>' +
+          "</div>" +
+        "</details>" +
       "</div>" +
       '<main class="layout">' +
         resourcePanel() +
@@ -3988,7 +4291,17 @@
 
   /* ---------------- boot ---------------- */
 
+  function bindMenuDismiss() {
+    document.addEventListener("click", function (event) {
+      var menu = document.getElementById("game-menu");
+      if (!menu || !menu.open || !menu.contains) return;
+      if (menu.contains(event.target)) return;
+      menu.open = false;
+    });
+  }
+
   function boot() {
+    bindMenuDismiss();
     var savedSession = readJSON(SESSION_KEY, null);
     if (savedSession && savedSession.mode === "cloud" && savedSession.token) {
       resumeCloudSession(savedSession).then(function (resumed) {

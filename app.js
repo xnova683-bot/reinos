@@ -1195,29 +1195,6 @@
               "). El bonus diario entrega 1 minuto de producción por recurso cada 20h.</div>" +
           "</div>" +
         "</div>" +
-        '<div class="panel">' +
-          '<div class="panel-head"><h2>Registro</h2></div>' +
-          '<div class="panel-body">' +
-            '<div class="log">' +
-              (state.log.length
-                ? state.log
-                    .map(function (entry) {
-                      var time = new Date(entry.t).toLocaleTimeString("es-ES", {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      });
-                      return (
-                        '<div class="log-item ' + entry.kind + '">' +
-                          '<div class="time">' + time + "</div>" +
-                          "<div>" + escapeHtml(entry.text) + "</div>" +
-                        "</div>"
-                      );
-                    })
-                    .join("")
-                : '<div class="log-item">Aún no hay acontecimientos.</div>') +
-            "</div>" +
-          "</div>" +
-        "</div>" +
       "</aside>"
     );
   }

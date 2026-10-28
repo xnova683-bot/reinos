@@ -1117,9 +1117,6 @@
               " / " + num(limit) + "</b></div>" +
             '<div class="info-line kb-line"><span>KB · moneda del rey</span><b id="kb-line">' +
               num((session && session.kb) || 0) + "</b></div>" +
-            '<div class="mini-note">La KB no se produce: solo el administrador puede entregártela.</div>' +
-            '<div class="mini-note">Los recursos se guardan automáticamente en el almacén. ' +
-              "Velocidad de recursos del reino: <b>x" + resourceSpeed().toFixed(2) + "</b>.</div>" +
           "</div>" +
         "</div>" +
       "</aside>"

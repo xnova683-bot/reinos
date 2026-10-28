@@ -1381,9 +1381,6 @@
         if (gate !== maintGateState) {
           maintGateState = gate;
           if (session) renderGame();
-        } else if (view === "mapa" && !adminMode && !itemDrag) {
-          view = "aldea";
-          renderGame();
         }
       })
       .catch(function () {
@@ -3690,7 +3687,7 @@
           setTimeout(function () {
             if (regionHintId === id) {
               regionHintId = null;
-              if (view === "mapa") { view = "aldea"; renderGame(); }
+              renderGame();
             }
           }, 1600);
         }, 500);
@@ -3745,7 +3742,6 @@
       openRegionId = null;
       mapFocusedRegion = null;
       regionHintId = null;
-      if (view === "mapa") { view = "aldea"; }
       pvpTarget = null;
       npcTarget = null;
       castleTarget = null;
@@ -4205,7 +4201,6 @@
     bindAdminSettings();
     bindMarketEvents();
     initMap();
-    if (view === "mapa") { view = "aldea"; }
     stopMarchAnimation();
   }
 

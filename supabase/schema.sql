@@ -1295,6 +1295,7 @@ as $fn$
 declare
   e public.expeditions%rowtype;
   res jsonb;
+  troops_left bigint;
   changed integer := 0;
 begin
   for e in
@@ -1338,12 +1339,29 @@ begin
       );
     end;
 
-    update public.expeditions
-      set status = 'returning',
-          result = res,
-          resolved_at = now(),
-          return_at = e.arrive_at + make_interval(secs => e.travel_seconds)
-      where id = e.id;
+    select coalesce(sum(coalesce((t.value)::numeric, 0)), 0)
+      into troops_left
+      from jsonb_each(case
+        when jsonb_typeof((select p.state->'troops' from public.profiles p where p.id = e.attacker)) = 'object'
+          then (select p.state->'troops' from public.profiles p where p.id = e.attacker)
+        else '{}'::jsonb
+      end) as t;
+
+    if troops_left > 0 then
+      update public.expeditions
+        set status = 'returning',
+            result = res,
+            resolved_at = now(),
+            return_at = e.arrive_at + make_interval(secs => e.travel_seconds)
+        where id = e.id;
+    else
+      update public.expeditions
+        set status = 'done',
+            result = res,
+            resolved_at = now(),
+            return_at = now()
+        where id = e.id;
+    end if;
     changed := changed + 1;
   end loop;
 

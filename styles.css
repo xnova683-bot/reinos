@@ -1244,6 +1244,172 @@ input {
   stroke: rgba(230, 202, 143, 0.9);
 }
 
+.world-road-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.world-road-casing {
+  fill: none;
+  stroke: rgba(42, 31, 18, 0.55);
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.world-road {
+  fill: none;
+  stroke: rgba(202, 166, 94, 0.62);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 7 5;
+  vector-effect: non-scaling-stroke;
+}
+
+.mundo-marker {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.15rem;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+  transform-origin: 50% 50%;
+  z-index: 3;
+}
+
+.mundo-sigil {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #d6b877;
+  background: radial-gradient(circle, rgba(214, 184, 119, 0.45), rgba(10, 9, 16, 0.9) 65%);
+  box-shadow: 0 0 0 4px rgba(214, 184, 119, 0.12), 0 2px 8px rgba(0, 0, 0, 0.55);
+}
+
+.mundo-marker .mlabel {
+  display: none;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.08rem 0.3rem;
+  border-radius: 999px;
+  background: rgba(10, 9, 16, 0.84);
+  border: 1px solid rgba(214, 184, 119, 0.42);
+  color: #efe6c8;
+  white-space: nowrap;
+}
+
+.worldmap.labels .mundo-marker .mlabel {
+  display: inline-block;
+}
+
+.march-route-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.march-route-casing {
+  fill: none;
+  stroke: rgba(10, 9, 16, 0.7);
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.march-route {
+  fill: none;
+  stroke: #e0b36a;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 5 4;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.85;
+}
+
+.march-route.own {
+  stroke: #9fd8b2;
+  stroke-width: 2.8;
+}
+
+.march-route.returning {
+  stroke-dasharray: 2 5;
+  opacity: 0.6;
+}
+
+.march-marker {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.12rem;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(var(--inv, 1));
+  transform-origin: 50% 50%;
+  z-index: 9;
+}
+
+.march-pin {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 2px solid #0b0a10;
+  background: #e0b36a;
+  box-shadow: 0 0 0 3px rgba(224, 179, 106, 0.2), 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.march-marker.horda .march-pin { background: #c4544a; }
+.march-marker.alianza .march-pin { background: #4a7ec4; }
+.march-marker.enanos .march-pin { background: #c4a24a; }
+.march-marker.own .march-pin {
+  box-shadow: 0 0 0 4px rgba(159, 216, 178, 0.28), 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+.march-marker.returning .march-pin {
+  animation: march-return-pulse 1.4s ease-in-out infinite;
+}
+
+.march-label {
+  display: none;
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.56rem;
+  padding: 0.08rem 0.32rem;
+  border-radius: 999px;
+  background: rgba(10, 9, 16, 0.86);
+  border: 1px solid rgba(224, 179, 106, 0.38);
+  color: #efe6c8;
+}
+
+.march-marker:hover .march-label,
+.worldmap.labels .march-marker.own .march-label {
+  display: inline-block;
+}
+
+@keyframes march-return-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.map-legend .dot.mundo { background: #d6b877; }
+.map-legend .dot.march { background: #9fd8b2; }
+
 .maint-screen {
   min-height: 100vh;
   display: flex;
@@ -1776,6 +1942,15 @@ input {
   border: 1px solid #3c5d86;
   border-radius: 10px;
   background: rgba(30, 44, 66, 0.55);
+}
+
+.march-card {
+  border-color: #6f5a32;
+  background: rgba(61, 48, 24, 0.45);
+}
+
+.march-card .pvp-info b {
+  color: #f0ddb0;
 }
 
 .pvp-info {

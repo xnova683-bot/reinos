@@ -1387,7 +1387,7 @@
 
   var world = {
     players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0,
-    roadBends: [], settings: {}, maintenance: {}, me: {}, at: 0, error: "",
+    roadBends: [], expeditions: [], moveSpeed: 1, settings: {}, maintenance: {}, me: {}, at: 0, error: "",
   };
   var worldTimer = null;
   var market = { orders: [], error: "", at: 0 };
@@ -1417,6 +1417,10 @@
   var maintError = "";
   var maintBusy = false;
   var maintGateState = false;
+  var marchTimer = null;
+  var marchSyncTimer = null;
+  var marchLastCull = 0;
+  var seenExpeditionResults = {};
 
   function isCloud() {
     return !!(session && session.mode === "cloud" && session.token);
@@ -1444,9 +1448,12 @@
         world.npcs = Array.isArray(data.npcs) ? data.npcs : [];
         world.castles = Array.isArray(data.castles) ? data.castles : [];
         world.roadBends = Array.isArray(data.road_bends) ? data.road_bends : [];
+        world.expeditions = Array.isArray(data.expeditions) ? data.expeditions : [];
         world.online = Number(data.online || 0);
         world.speed = Number(data.speed || 1);
+        world.moveSpeed = Number(data.move_speed || 1);
         if (state) state.speed = world.speed;
+        handleExpeditionResults();
         world.settings = data.settings || {};
         world.maintenance = data.maintenance || {};
         world.me = data.me || {};
@@ -1464,6 +1471,8 @@
         if (gate !== maintGateState) {
           maintGateState = gate;
           if (session) renderGame();
+        } else if (view === "mapa" && !adminMode && !itemDrag) {
+          renderGame();
         }
       })
       .catch(function () {
@@ -1550,7 +1559,7 @@
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
-    world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0, roadBends: [], settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
+    world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0, roadBends: [], expeditions: [], moveSpeed: 1, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
     market = { orders: [], error: "", at: 0 };
     marketMsg = null;
     pvpTarget = null;
@@ -1585,30 +1594,46 @@
     });
   }
 
-  function pvpAttack(targetId) {
-    if (!isCloud() || pvpBusy) return;
-    var target = null;
-    world.players.forEach(function (player) {
-      if (String(player.id) === String(targetId)) target = player;
+  function activeExpedition() {
+    var found = null;
+    (world.expeditions || []).forEach(function (expedition) {
+      if (found || !session || String(expedition.attacker) !== String(session.userId)) return;
+      if (expedition.status === "outbound" || expedition.status === "returning") found = expedition;
     });
-    if (!target) return;
+    return found;
+  }
+
+  function secondsUntil(value) {
+    var at = Date.parse(value);
+    if (!isFinite(at)) return 0;
+    return Math.max(0, Math.ceil((at - Date.now()) / 1000));
+  }
+
+  function startMarch(targetType, targetId) {
+    if (!isCloud() || pvpBusy) return;
+    if (!targetId) return;
     pvpBusy = true;
     pvpResult = null;
     renderGame();
     flushCloudSave().then(function () {
-      return api("/rest/v1/rpc/attack_rival", {
+      return api("/rest/v1/rpc/start_expedition", {
         method: "POST",
         token: session.token,
-        body: { target_id: target.id },
+        body: { p_target_type: targetType, p_target_id: targetId },
       });
     }).then(function (result) {
       pvpBusy = false;
       if (!result.ok) {
         var message = cloudErrorMessage(result);
-        if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
-        else if (message.indexOf("shielded") !== -1) message = "Ese jugador sigue protegido por su escudo inicial.";
-        else if (message.indexOf("cooldown") !== -1) message = "Ya atacaste a ese jugador hace menos de 5 minutos.";
+        if (message.indexOf("expedition active") !== -1) message = "Ya tienes un ejército en camino.";
+        else if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
+        else if (message.indexOf("shielded") !== -1) message = "Ese jugador sigue protegido por su escudo.";
+        else if (message.indexOf("cooldown") !== -1) message = "Ese objetivo está en tiempo de espera.";
         else if (message.indexOf("no troops") !== -1) message = "No tienes tropas para atacar.";
+        else if (message.indexOf("already yours") !== -1) message = "Ese castillo ya es tuyo.";
+        else if (message.indexOf("cannot attack yourself") !== -1) message = "No puedes atacarte a ti mismo.";
+        else if (message.indexOf("no village") !== -1) message = "Tu aldea aún no tiene posición en el mundo.";
+        else if (message.indexOf("not found") !== -1) message = "Ese objetivo ya no existe.";
         pvpResult = { ok: false, text: message };
         renderGame();
         return;
@@ -1616,118 +1641,54 @@
       var data = result.data || {};
       pvpResult = {
         ok: true,
-        win: !!data.win,
+        win: true,
         text:
-          (data.win ? "Victoria" : "Derrota") + " contra " + (data.target || "el rival") +
-          (data.win ? " · botín " + num(data.loot || 0) : "") +
-          " · bajas " + num(data.attacker_losses || 0) + "/" + num(data.defender_losses || 0),
+          "Ejército en camino a " + (data.target || "el objetivo") +
+          " · llegada en " + num(data.travel_seconds || 0) + " s. " +
+          "Al llegar combatirá y regresará por la misma ruta.",
       };
-      addLog(String(data.text || "Batalla contra " + (data.target || "un rival")), data.win ? "good" : "bad");
-      return refreshOwnProfile().then(syncWorld).then(function () {
+      return syncWorld().then(function () {
         renderGame();
       });
     }).catch(function () {
       pvpBusy = false;
-      pvpResult = { ok: false, text: "No se pudo completar el ataque." };
+      pvpResult = { ok: false, text: "No se pudo iniciar la marcha." };
       renderGame();
     });
+  }
+
+  function pvpAttack(targetId) {
+    startMarch("player", targetId);
   }
 
   function castleAttack(castleId) {
-    if (!isCloud() || pvpBusy) return;
-    var castle = null;
-    world.castles.forEach(function (item) {
-      if (String(item.id) === String(castleId)) castle = item;
-    });
-    if (!castle) return;
-    pvpBusy = true;
-    pvpResult = null;
-    renderGame();
-    flushCloudSave().then(function () {
-      return api("/rest/v1/rpc/attack_castle", {
-        method: "POST",
-        token: session.token,
-        body: { castle_id: castle.id },
-      });
-    }).then(function (result) {
-      pvpBusy = false;
-      if (!result.ok) {
-        var message = cloudErrorMessage(result);
-        if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
-        else if (message.indexOf("cooldown") !== -1) message = "Ya atacaste ese castillo hace menos de 10 minutos.";
-        else if (message.indexOf("no troops") !== -1) message = "No tienes tropas para atacar.";
-        else if (message.indexOf("already yours") !== -1) message = "Ese castillo ya es tuyo.";
-        else if (message.indexOf("not found") !== -1) message = "Ese castillo ya no existe.";
-        pvpResult = { ok: false, text: message };
-        renderGame();
-        return;
-      }
-      var data = result.data || {};
-      pvpResult = {
-        ok: true,
-        win: !!data.win,
-        text:
-          (data.win ? "¡Conquistaste " + (data.target || "el castillo") + "!" : "No pudiste tomar " + (data.target || "el castillo")) +
-          (data.win ? " Eres el nuevo rey · botín " + num(data.loot || 0) : "") +
-          " · bajas " + num(data.attacker_losses || 0) + "/" + num(data.defender_losses || 0),
-      };
-      addLog(String(data.text || "Batalla por el castillo"), data.win ? "good" : "bad");
-      return refreshOwnProfile().then(syncWorld).then(function () {
-        renderGame();
-      });
-    }).catch(function () {
-      pvpBusy = false;
-      pvpResult = { ok: false, text: "No se pudo atacar el castillo." };
-      renderGame();
-    });
+    startMarch("castle", castleId);
   }
 
   function npcAttack(npcId) {
-    if (!isCloud() || pvpBusy) return;
-    var npc = null;
-    world.npcs.forEach(function (item) {
-      if (String(item.id) === String(npcId)) npc = item;
+    startMarch("npc", npcId);
+  }
+
+  function handleExpeditionResults() {
+    var latest = null;
+    var own = (world.expeditions || []).filter(function (expedition) {
+      return session && String(expedition.attacker) === String(session.userId) && expedition.result;
     });
-    if (!npc) return;
-    pvpBusy = true;
-    pvpResult = null;
-    renderGame();
-    flushCloudSave().then(function () {
-      return api("/rest/v1/rpc/attack_npc", {
-        method: "POST",
-        token: session.token,
-        body: { npc_id: npc.id },
-      });
-    }).then(function (result) {
-      pvpBusy = false;
-      if (!result.ok) {
-        var message = cloudErrorMessage(result);
-        if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
-        else if (message.indexOf("cooldown") !== -1) message = "Ya saqueaste esa aldea hace menos de 5 minutos.";
-        else if (message.indexOf("no troops") !== -1) message = "No tienes tropas para atacar.";
-        else if (message.indexOf("not found") !== -1) message = "Esa aldea NPC ya no existe.";
-        pvpResult = { ok: false, text: message };
-        renderGame();
-        return;
-      }
-      var data = result.data || {};
-      pvpResult = {
-        ok: true,
-        win: !!data.win,
-        text:
-          (data.win ? "Victoria" : "Derrota") + " contra " + (data.target || "la aldea NPC") +
-          (data.win ? " · botín " + num(data.loot || 0) : "") +
-          " · bajas " + num(data.attacker_losses || 0),
-      };
-      addLog(String(data.text || "Incursión contra " + (data.target || "una aldea NPC")), data.win ? "good" : "bad");
-      return refreshOwnProfile().then(syncWorld).then(function () {
-        renderGame();
-      });
-    }).catch(function () {
-      pvpBusy = false;
-      pvpResult = { ok: false, text: "No se pudo completar la incursión." };
-      renderGame();
+    own.sort(function (a, b) {
+      return Date.parse(b.resolved_at || b.return_at || 0) - Date.parse(a.resolved_at || a.return_at || 0);
     });
+    latest = own[0] || null;
+    if (!latest) return;
+    var key = String(latest.id);
+    if (seenExpeditionResults[key]) return;
+    seenExpeditionResults[key] = true;
+    var result = latest.result || {};
+    pvpResult = {
+      ok: !result.error && !!result.win,
+      win: !!result.win,
+      text: String(result.text || (result.win ? "Victoria" : "La marcha regresó sin botín.")),
+    };
+    refreshOwnProfile();
   }
 
   /* ---------------- mapa por regiones ---------------- */
@@ -2177,6 +2138,250 @@
     return roadNetwork(points, bends).svg;
   }
 
+  function regionPortal(region) {
+    if (!region) return null;
+    var x = Number(region.world_x);
+    var y = Number(region.world_y);
+    if (!isFinite(x) || !isFinite(y)) {
+      var raw = region.bbox || { x0: 0, y0: 0, x1: 1, y1: 1 };
+      var bw = Number(raw.x1) - Number(raw.x0);
+      var bh = Number(raw.y1) - Number(raw.y0);
+      x = (Number(raw.x0) + Number(raw.x1)) / 2 - bw * 0.22;
+      y = (Number(raw.y0) + Number(raw.y1)) / 2 + bh * 0.18;
+    }
+    return {
+      x: clamp(x, 0, 1),
+      y: clamp(y, 0, 1),
+      key: "m:" + region.id,
+      region: region.id,
+    };
+  }
+
+  function worldRoadNetwork() {
+    var regions = {};
+    world.regions.forEach(function (region) {
+      regions[String(region.id)] = region;
+    });
+    var casings = [];
+    var surfaces = [];
+    world.regions.forEach(function (region) {
+      var col = (Number(region.id) - 1) % 5;
+      var row = Math.floor((Number(region.id) - 1) / 5);
+      var from = regionPortal(region);
+      if (!from) return;
+      var neighbours = [];
+      if (col < 4) neighbours.push(Number(region.id) + 1);
+      if (row < 3) neighbours.push(Number(region.id) + 5);
+      neighbours.forEach(function (id) {
+        var other = regions[String(id)];
+        if (!other) return;
+        var to = regionPortal(other);
+        if (!to) return;
+        var geometry = roadLinkGeometry(from, to, Number(region.id) * 19 + id * 7, {});
+        if (!geometry) return;
+        casings.push('<path class="world-road-casing" d="' + geometry.d + '"></path>');
+        surfaces.push('<path class="world-road" d="' + geometry.d + '"></path>');
+      });
+    });
+    if (!surfaces.length) return "";
+    return (
+      '<svg class="world-road-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
+        casings.join("") + surfaces.join("") +
+      "</svg>"
+    );
+  }
+
+  function mundoMarker(region) {
+    var portal = regionPortal(region);
+    if (!portal) return "";
+    return (
+      '<div class="mundo-marker" data-mx="' + portal.x.toFixed(5) + '" data-my="' + portal.y.toFixed(5) + '" ' +
+        'title="Mundo de ' + escapeHtml(region.name) + '" ' +
+        'style="left:' + (portal.x * 100).toFixed(2) + "%;top:" + (portal.y * 100).toFixed(2) + '%">' +
+        '<span class="mundo-sigil"></span><span class="mlabel">Mundo</span>' +
+      "</div>"
+    );
+  }
+
+  function expeditionPathPoints(expedition) {
+    if (!expedition || !Array.isArray(expedition.path)) return [];
+    return expedition.path.filter(function (point) {
+      return point && isFinite(Number(point[0])) && isFinite(Number(point[1]));
+    }).map(function (point) {
+      return { x: Number(point[0]), y: Number(point[1]) };
+    });
+  }
+
+  function expeditionPathD(points) {
+    if (points.length < 2) return "";
+    var out = "M" + (points[0].x * 100).toFixed(3) + " " + (points[0].y * 100).toFixed(3);
+    for (var i = 1; i < points.length; i++) {
+      out += " L" + (points[i].x * 100).toFixed(3) + " " + (points[i].y * 100).toFixed(3);
+    }
+    return out;
+  }
+
+  function expeditionRouteSvg(expedition) {
+    var points = expeditionPathPoints(expedition);
+    if (points.length < 2) return "";
+    var d = expeditionPathD(points);
+    var own = session && String(expedition.attacker) === String(session.userId);
+    var cls = "march-route" + (own ? " own" : "") + (expedition.status === "returning" ? " returning" : "");
+    return (
+      '<svg class="march-route-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">' +
+        '<path class="march-route-casing" d="' + d + '"></path>' +
+        '<path class="' + cls + '" d="' + d + '"></path>' +
+      "</svg>"
+    );
+  }
+
+  function expeditionMarkers(expedition) {
+    var points = expeditionPathPoints(expedition);
+    if (!points.length) return "";
+    var first = points[0];
+    var own = session && String(expedition.attacker) === String(session.userId);
+    var race = expedition.race && RACES[expedition.race] ? expedition.race : "";
+    return (
+      '<div class="march-marker ' + race + (own ? " own" : "") + '" data-march-id="' +
+        escapeHtml(String(expedition.id)) + '" data-mx="' + first.x.toFixed(5) + '" data-my="' +
+        first.y.toFixed(5) + '" style="left:' + (first.x * 100).toFixed(2) + "%;top:" +
+        (first.y * 100).toFixed(2) + '%">' +
+        '<span class="march-pin"></span>' +
+        '<span class="march-label">' + escapeHtml(expedition.attacker_name || "Marcha") +
+          " · " + escapeHtml(expedition.target_name || "objetivo") + "</span>" +
+      "</div>"
+    );
+  }
+
+  function visibleExpeditions(open) {
+    return (world.expeditions || []).filter(function (expedition) {
+      if (expedition.status !== "outbound" && expedition.status !== "returning") return false;
+      if (!open) return true;
+      return String(expedition.from_region) === String(open.id) ||
+        String(expedition.to_region) === String(open.id) ||
+        (expedition.path || []).some(function (point) {
+          return pointInRegion(open, { x: Number(point[0]), y: Number(point[1]) });
+        });
+    });
+  }
+
+  function expeditionOverlay(open) {
+    var list = visibleExpeditions(open);
+    if (!list.length) return "";
+    return list.map(expeditionRouteSvg).join("") + list.map(expeditionMarkers).join("");
+  }
+
+  function marchPointAt(points, fraction) {
+    if (!points.length) return null;
+    if (points.length === 1) return { x: points[0].x, y: points[0].y };
+    var lengths = [];
+    var total = 0;
+    for (var i = 0; i < points.length - 1; i++) {
+      var dx = (points[i + 1].x - points[i].x) * MAP_W;
+      var dy = (points[i + 1].y - points[i].y) * MAP_H;
+      var len = Math.hypot(dx, dy);
+      lengths.push(len);
+      total += len;
+    }
+    if (total <= 0) return { x: points[0].x, y: points[0].y };
+    var target = clamp(fraction, 0, 1) * total;
+    for (var j = 0; j < lengths.length; j++) {
+      if (target <= lengths[j] || j === lengths.length - 1) {
+        var t = lengths[j] > 0 ? clamp(target / lengths[j], 0, 1) : 0;
+        return {
+          x: points[j].x + (points[j + 1].x - points[j].x) * t,
+          y: points[j].y + (points[j + 1].y - points[j].y) * t,
+        };
+      }
+      target -= lengths[j];
+    }
+    return { x: points[points.length - 1].x, y: points[points.length - 1].y };
+  }
+
+  function stopMarchAnimation() {
+    if (marchTimer) clearInterval(marchTimer);
+    if (marchSyncTimer) clearTimeout(marchSyncTimer);
+    marchTimer = null;
+    marchSyncTimer = null;
+  }
+
+  function startMarchAnimation() {
+    stopMarchAnimation();
+    if (!mapStageEl || view !== "mapa") return;
+    var list = (world.expeditions || []).filter(function (expedition) {
+      return expedition.status === "outbound" || expedition.status === "returning";
+    });
+    var nextEvent = null;
+    var nowMs = Date.now();
+    list.forEach(function (expedition) {
+      var arrive = Date.parse(expedition.arrive_at);
+      var back = Date.parse(expedition.return_at);
+      [arrive, back].forEach(function (at) {
+        if (isFinite(at) && at > nowMs && (!nextEvent || at < nextEvent)) nextEvent = at;
+      });
+    });
+    if (nextEvent) {
+      marchSyncTimer = setTimeout(function () {
+        syncWorld();
+      }, Math.max(800, nextEvent - nowMs + 900));
+    }
+    if (!list.length) return;
+
+    function tick() {
+      if (!mapStageEl || !mapStageEl.querySelectorAll) return;
+      var ownMarch = activeExpedition();
+      var countdown = document.getElementById("march-countdown");
+      if (ownMarch && countdown) {
+        countdown.textContent = num(secondsUntil(
+          ownMarch.status === "outbound" ? ownMarch.arrive_at : ownMarch.return_at
+        ));
+      }
+      var nodes = mapStageEl.querySelectorAll(".march-marker");
+      var now = Date.now();
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        var id = node.getAttribute("data-march-id");
+        var expedition = null;
+        list.forEach(function (candidate) {
+          if (!expedition && String(candidate.id) === String(id)) expedition = candidate;
+        });
+        if (!expedition) {
+          if (node.style) node.style.display = "none";
+          continue;
+        }
+        var depart = Date.parse(expedition.depart_at);
+        var arrive = Date.parse(expedition.arrive_at);
+        var back = Date.parse(expedition.return_at);
+        var fraction = 0;
+        if (isFinite(depart) && isFinite(arrive) && now < arrive) {
+          fraction = clamp((now - depart) / Math.max(1, arrive - depart), 0, 1);
+        } else if (isFinite(arrive) && isFinite(back) && now < back) {
+          fraction = 1 - clamp((now - arrive) / Math.max(1, back - arrive), 0, 1);
+        } else {
+          fraction = 1;
+        }
+        var point = marchPointAt(expeditionPathPoints(expedition), fraction);
+        if (!point) continue;
+        if (node.style) {
+          node.style.left = (point.x * 100).toFixed(2) + "%";
+          node.style.top = (point.y * 100).toFixed(2) + "%";
+        }
+        node.setAttribute("data-mx", point.x.toFixed(5));
+        node.setAttribute("data-my", point.y.toFixed(5));
+        if (node.classList) {
+          if (expedition.status === "returning") node.classList.add("returning");
+          else node.classList.remove("returning");
+        }
+      }
+      if (now - marchLastCull > 350) {
+        marchLastCull = now;
+        cullMarkers();
+      }
+    }
+    marchTimer = setInterval(tick, 90);
+    tick();
+  }
+
   function roadBendsForRegion(regionId) {
     var bends = {};
     (world.roadBends || []).forEach(function (bend) {
@@ -2306,7 +2511,9 @@
               ? "Portal de mantenimiento actualizado."
               : fn === "admin_set_resource_speed"
                 ? "Velocidad de recursos actualizada."
-                : fn === "admin_grant_kb"
+                : fn === "admin_set_movement_speed"
+                  ? "Velocidad de movimientos actualizada."
+                  : fn === "admin_grant_kb"
                   ? "KB entregadas al jugador."
                   : "Mapa actualizado.",
       };
@@ -2343,6 +2550,16 @@
           '<button class="btn" id="speed-save">Guardar velocidad</button>' +
         '</div>' +
         '<div class="admin-maint-error" id="speed-error"></div>' +
+      "</div>" +
+      '<div class="admin-maint"><b>Velocidad de movimientos</b>' +
+        '<div class="admin-maint-state">Actual: x' + Number(world.moveSpeed || 1).toFixed(2) +
+          ' · afecta a las marchas nuevas</div>' +
+        '<div class="admin-speed-row">' +
+          '<input id="move-speed-input" type="number" min="0.1" max="10" step="0.1" value="' +
+            Number(world.moveSpeed || 1).toFixed(1) + '" />' +
+          '<button class="btn" id="move-speed-save">Guardar velocidad</button>' +
+        '</div>' +
+        '<div class="admin-maint-error" id="move-speed-error"></div>' +
       "</div>"
     );
   }
@@ -2492,6 +2709,7 @@
     currentRoadBends = {};
     currentRoadRegionId = null;
     var power = armyPower(state);
+    var myMarch = activeExpedition();
     var open = openRegionId ? regionById(openRegionId) : null;
     if (openRegionId && !open) openRegionId = null;
 
@@ -2524,7 +2742,9 @@
           (world.error ? escapeHtml(world.error) : "Cargando regiones del mundo…") +
         "</div>" + meMarker;
     } else if (!open) {
-      layer = world.regions
+      layer = worldRoadNetwork() +
+        expeditionOverlay(null) +
+        world.regions
         .map(function (region) {
           var c = polygonCentroid(region);
           var full = Number(region.villages) >= Number(region.capacity);
@@ -2542,7 +2762,9 @@
             "</button>"
           );
         })
-        .join("") + meMarker;
+        .join("") +
+        world.regions.map(mundoMarker).join("") +
+        meMarker;
     } else {
       var players = world.players.filter(function (player) {
         if (player.admin) return false;
@@ -2568,12 +2790,16 @@
         !!meMarker &&
         (String(session.region) === String(open.id) || pointInRegion(open, mePos));
       if (mineHere) points.push({ x: Number(mePos.x), y: Number(mePos.y), key: "s:" + session.userId });
+      var portal = regionPortal(open);
+      if (portal) points.push({ x: portal.x, y: portal.y, key: portal.key });
 
       currentRoadBends = roadBendsForRegion(open.id);
       currentRoadPoints = points;
       currentRoadRegionId = open.id;
       currentRoadNetwork = roadNetwork(points, currentRoadBends);
-      layer = currentRoadNetwork.svg + (castle
+      layer = currentRoadNetwork.svg +
+        expeditionOverlay(open) +
+        mundoMarker(open) + (castle
         ? '<button class="marker castle" data-map-castle="' + escapeHtml(castle.id) + '" ' +
             'data-mx="' + castle.x + '" data-my="' + castle.y + '" ' +
             'title="' + escapeHtml(castle.name) + (castle.owner ? " · Rey " + escapeHtml(castle.owner_name) : " · Sin rey") + '" ' +
@@ -2666,11 +2892,12 @@
               num(castleShare) + " de oro, madera, comida y piedra).</span>" +
             "<span>Éxito estimado: <b>" + num(castleOdds) + "%</b></span>" +
             (castleMine ? '<span class="pvp-warn">Este castillo es tuyo: eres el rey.</span>' : "") +
+            (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
             (power <= 0 && !castleMine ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
           "</div>" +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="castle-attack-btn"' + (pvpBusy || castleMine || power <= 0 ? " disabled" : "") + ">" +
-              (pvpBusy ? "Atacando…" : "Atacar castillo") +
+            '<button class="btn-primary" id="castle-attack-btn"' + (pvpBusy || castleMine || power <= 0 || myMarch ? " disabled" : "") + ">" +
+              (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="castle-cancel-btn">Cancelar</button>' +
           "</div>" +
@@ -2692,11 +2919,12 @@
             "<span>Botín si la derrotas: <b>" + num(npcLootValue) + "</b> recursos (" +
               num(npcShare) + " de oro, madera, comida y piedra).</span>" +
             "<span>Éxito estimado: <b>" + num(npcOdds) + "%</b></span>" +
+            (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
             (power <= 0 ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
           "</div>" +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="npc-attack-btn"' + (pvpBusy || power <= 0 ? " disabled" : "") + ">" +
-              (pvpBusy ? "Atacando…" : "Atacar") +
+            '<button class="btn-primary" id="npc-attack-btn"' + (pvpBusy || power <= 0 || myMarch ? " disabled" : "") + ">" +
+              (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="npc-cancel-btn">Cancelar</button>' +
           "</div>" +
@@ -2713,10 +2941,11 @@
             " · Poder " + num(target.power) +
             (targetRegion ? " · " + escapeHtml(targetRegion.name) : "") + "</span>" +
             (target.shield ? '<span class="pvp-warn">Escudo activo: no se puede atacar.</span>' : "") +
+            (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
           "</div>" +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="pvp-attack-btn"' + (target.shield || pvpBusy ? " disabled" : "") + ">" +
-              (pvpBusy ? "Atacando…" : "Atacar") +
+            '<button class="btn-primary" id="pvp-attack-btn"' + (target.shield || pvpBusy || myMarch ? " disabled" : "") + ">" +
+              (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="pvp-cancel-btn">Cancelar</button>' +
           "</div>" +
@@ -2725,6 +2954,24 @@
     var resultCard = pvpResult
       ? '<div class="pvp-result ' + (pvpResult.ok && pvpResult.win ? "win" : "lose") + '">' + escapeHtml(pvpResult.text) + "</div>"
       : "";
+
+    var marchCard = "";
+    if (myMarch) {
+      var marchRegion = regionById(myMarch.to_region);
+      var outboundMarch = myMarch.status === "outbound";
+      var eta = secondsUntil(outboundMarch ? myMarch.arrive_at : myMarch.return_at);
+      marchCard =
+        '<div class="pvp-card march-card">' +
+          '<div class="pvp-info"><b>Marcha de tu ejército</b>' +
+            "<span>Destino: " + escapeHtml(myMarch.target_name || "objetivo") +
+              (marchRegion ? " · " + escapeHtml(marchRegion.name) : "") + "</span>" +
+            "<span>" + (outboundMarch ? "En camino; combate al llegar." : "Regresando de la batalla.") +
+              " Quedan <b id=\"march-countdown\">" + num(eta) + "</b> s.</span>" +
+            '<span class="npc-meta">Velocidad del reino: <b>x' + Number(world.moveSpeed || 1).toFixed(2) + "</b></span>" +
+          "</div>" +
+          '<div class="pvp-actions"><span class="hint">Una marcha activa por jugador</span></div>' +
+        "</div>";
+    }
 
     var kingBanner = "";
     if (open) {
@@ -2765,8 +3012,8 @@
             (adminMode
               ? "Arrastra para mover."
               : open
-                ? "Toca una aldea para atacarla."
-                : "Toca una región para entrar. Mantén presionada para ver su nombre.") +
+                ? "Toca un objetivo para enviar una marcha."
+                : "Toca una región para entrar. Las líneas doradas son los caminos del Mundo.") +
           "</span>" +
         "</div>" +
         adminPanel +
@@ -2775,6 +3022,7 @@
         npcCard +
         targetCard +
         resultCard +
+        marchCard +
         '<div class="worldmap' + (adminMode ? " editing" : "") + (open ? " labels" : "") + '" id="worldmap">' +
           '<div class="worldmap-stage' + (open ? " labels" : "") + '" id="worldmap-stage" ' +
             'style="width:' + MAP_W + "px;height:" + MAP_H + 'px">' +
@@ -2790,6 +3038,8 @@
           '<span><i class="dot player"></i>Aldea</span>' +
           '<span><i class="dot npc"></i>NPC</span>' +
           '<span><i class="dot castle"></i>Castillo</span>' +
+          '<span><i class="dot mundo"></i>Mundo</span>' +
+          '<span><i class="dot march"></i>Marcha</span>' +
           '<span class="grow"></span><span class="hint">Tu poder: ' + num(power) + "</span>" +
         "</div>" +
         feed +
@@ -2871,7 +3121,7 @@
     var h = mapWrapEl.clientHeight || 480;
     var nodes;
     try {
-      nodes = mapWrapEl.querySelectorAll(".marker, .region-point");
+      nodes = mapWrapEl.querySelectorAll(".marker, .region-point, .mundo-marker, .march-marker");
     } catch (err) {
       return;
     }
@@ -3578,6 +3828,21 @@
       });
     }
 
+    var moveSpeedSave = document.getElementById("move-speed-save");
+    if (moveSpeedSave) {
+      moveSpeedSave.addEventListener("click", function () {
+        var input = document.getElementById("move-speed-input");
+        var errorEl = document.getElementById("move-speed-error");
+        var speed = input ? Number(input.value) : NaN;
+        if (!isFinite(speed) || speed < 0.1 || speed > 10) {
+          if (errorEl) errorEl.textContent = "La velocidad debe estar entre 0.1 y 10.";
+          return;
+        }
+        if (errorEl) errorEl.textContent = "";
+        adminAction("admin_set_movement_speed", { p_speed: speed });
+      });
+    }
+
     var maintToggle = document.getElementById("maint-toggle");
     if (maintToggle) {
       maintToggle.addEventListener("click", function () {
@@ -3717,6 +3982,8 @@
     bindAdminSettings();
     bindMarketEvents();
     initMap();
+    if (view === "mapa") startMarchAnimation();
+    else stopMarchAnimation();
   }
 
   /* ---------------- boot ---------------- */

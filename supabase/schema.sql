@@ -38,6 +38,15 @@ create table if not exists public.regions (
   updated_at timestamptz not null default now()
 );
 
+alter table public.regions add column if not exists world_x numeric;
+alter table public.regions add column if not exists world_y numeric;
+update public.regions
+  set world_x = ((bbox->>'x0')::numeric + (bbox->>'x1')::numeric) / 2
+    - ((bbox->>'x1')::numeric - (bbox->>'x0')::numeric) * 0.22,
+      world_y = ((bbox->>'y0')::numeric + (bbox->>'y1')::numeric) / 2
+    + ((bbox->>'y1')::numeric - (bbox->>'y0')::numeric) * 0.18
+where world_x is null or world_y is null;
+
 create table if not exists public.world_settings (
   id integer primary key default 1 check (id = 1),
   map_image text,
@@ -48,6 +57,7 @@ alter table public.world_settings add column if not exists maintenance boolean n
 alter table public.world_settings add column if not exists maintenance_message text not null default '';
 alter table public.world_settings add column if not exists maintenance_version bigint not null default 0;
 alter table public.world_settings add column if not exists resource_speed numeric not null default 1;
+alter table public.world_settings add column if not exists movement_speed numeric not null default 1;
 
 insert into public.world_settings (id, map_image)
 values (1, null)
@@ -66,6 +76,37 @@ create table if not exists public.road_bends (
 );
 
 alter table public.road_bends enable row level security;
+
+create table if not exists public.expeditions (
+  id uuid primary key default gen_random_uuid(),
+  attacker uuid not null references public.profiles (id) on delete cascade,
+  target_type text not null check (target_type in ('player', 'npc', 'castle')),
+  target_id uuid not null,
+  target_name text not null,
+  from_region integer references public.regions (id) on delete set null,
+  to_region integer references public.regions (id) on delete set null,
+  from_x numeric not null,
+  from_y numeric not null,
+  to_x numeric not null,
+  to_y numeric not null,
+  path jsonb not null default '[]'::jsonb,
+  status text not null default 'outbound' check (status in ('outbound', 'returning', 'done')),
+  depart_at timestamptz not null default now(),
+  arrive_at timestamptz not null,
+  return_at timestamptz not null,
+  travel_seconds integer not null check (travel_seconds > 0),
+  speed numeric not null default 1,
+  result jsonb,
+  resolved_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists expeditions_active_idx
+  on public.expeditions (status, arrive_at);
+create index if not exists expeditions_attacker_idx
+  on public.expeditions (attacker, created_at desc);
+
+alter table public.expeditions enable row level security;
 
 create table if not exists public.world_maintenance (
   id integer primary key default 1 check (id = 1),
@@ -223,13 +264,15 @@ begin
       pts := pts || jsonb_build_array(jsonb_build_array(px, py));
     end loop;
 
-    insert into public.regions (name, points, bbox, locked, capacity)
+    insert into public.regions (name, points, bbox, locked, capacity, world_x, world_y)
     values (
       names[i + 1],
       pts,
       jsonb_build_object('x0', minx, 'y0', miny, 'x1', maxx, 'y1', maxy),
       i > 1,
-      25
+      25,
+      (minx + maxx) / 2 - (maxx - minx) * 0.22,
+      (miny + maxy) / 2 + (maxy - miny) * 0.18
     );
   end loop;
 end;
@@ -334,6 +377,96 @@ as $fn$
   select 2000
     + coalesce((s->'buildings'->>'granero')::numeric, 1) * 1500
     + coalesce((s->'buildings'->>'ayuntamiento')::numeric, 1) * 800;
+$fn$;
+
+create or replace function public.region_route(p_from integer, p_to integer)
+returns integer[]
+language plpgsql
+immutable
+as $fn$
+declare
+  route integer[] := array[p_from];
+  c integer := (p_from - 1) % 5;
+  r integer := (p_from - 1) / 5;
+  tc integer := (p_to - 1) % 5;
+  tr integer := (p_to - 1) / 5;
+begin
+  if p_from = p_to then return route; end if;
+
+  while c <> tc loop
+    c := c + case when tc > c then 1 else -1 end;
+    route := route || ((r * 5) + c + 1);
+  end loop;
+  while r <> tr loop
+    r := r + case when tr > r then 1 else -1 end;
+    route := route || ((r * 5) + c + 1);
+  end loop;
+  return route;
+end;
+$fn$;
+
+create or replace function public.expedition_path(
+  p_from integer,
+  p_to integer,
+  ax numeric,
+  ay numeric,
+  tx numeric,
+  ty numeric
+)
+returns jsonb
+language plpgsql
+stable
+set search_path = public
+as $fn$
+declare
+  pts jsonb := jsonb_build_array(jsonb_build_array(ax, ay));
+  rid integer;
+  px numeric;
+  py numeric;
+begin
+  if p_from is null or p_to is null then
+    return jsonb_build_array(jsonb_build_array(ax, ay), jsonb_build_array(tx, ty));
+  end if;
+
+  if p_from <> p_to then
+    foreach rid in array public.region_route(p_from, p_to) loop
+      select r.world_x, r.world_y into px, py from public.regions r where r.id = rid;
+      if px is not null and py is not null then
+        pts := pts || jsonb_build_array(jsonb_build_array(px, py));
+      end if;
+    end loop;
+  end if;
+
+  pts := pts || jsonb_build_array(jsonb_build_array(tx, ty));
+  return pts;
+end;
+$fn$;
+
+create or replace function public.expedition_distance(path jsonb)
+returns numeric
+language plpgsql
+immutable
+as $fn$
+declare
+  total numeric := 0;
+  i integer;
+  ax numeric;
+  ay numeric;
+  bx numeric;
+  ey numeric;
+begin
+  if path is null or jsonb_array_length(path) < 2 then return 0; end if;
+  for i in 0..jsonb_array_length(path) - 2 loop
+    ax := (path->i->>0)::numeric;
+    ay := (path->i->>1)::numeric;
+    bx := (path->(i + 1)->>0)::numeric;
+    ey := (path->(i + 1)->>1)::numeric;
+    total := total + sqrt(
+      power((bx - ax) * 3182, 2) + power((ey - ay) * 2249, 2)
+    );
+  end loop;
+  return total * 1.08;
+end;
 $fn$;
 
 create or replace function public.is_admin()
@@ -477,6 +610,8 @@ begin
     update public.profiles set last_seen = now() where id = uid;
   end if;
 
+  perform public.resolve_expeditions();
+
   select jsonb_build_object(
     'me', coalesce((
       select jsonb_build_object(
@@ -510,6 +645,8 @@ begin
         'name', r.name,
         'points', r.points,
         'bbox', r.bbox,
+        'world_x', r.world_x,
+        'world_y', r.world_y,
         'locked', r.locked,
         'capacity', r.capacity,
         'villages', (select count(*) from public.profiles p
@@ -538,6 +675,44 @@ begin
     'speed', coalesce((
       select s.resource_speed from public.world_settings s where s.id = 1
     ), 1),
+    'move_speed', coalesce((
+      select s.movement_speed from public.world_settings s where s.id = 1
+    ), 1),
+    'expeditions', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', e.id,
+        'attacker', e.attacker,
+        'attacker_name', coalesce(nullif(p.username, ''), 'Señor sin nombre'),
+        'race', p.race,
+        'target_type', e.target_type,
+        'target_id', e.target_id,
+        'target_name', e.target_name,
+        'from_region', e.from_region,
+        'to_region', e.to_region,
+        'from_x', e.from_x,
+        'from_y', e.from_y,
+        'to_x', e.to_x,
+        'to_y', e.to_y,
+        'path', e.path,
+        'status', e.status,
+        'depart_at', e.depart_at,
+        'arrive_at', e.arrive_at,
+        'return_at', e.return_at,
+        'travel_seconds', e.travel_seconds,
+        'speed', e.speed,
+        'result', e.result,
+        'resolved_at', e.resolved_at,
+        'created_at', e.created_at
+      ) order by e.created_at desc)
+      from (
+        select * from public.expeditions x
+        where x.status in ('outbound', 'returning')
+           or (uid is not null and x.attacker = uid and x.resolved_at > now() - interval '10 minutes')
+        order by x.created_at desc
+        limit 40
+      ) e
+      left join public.profiles p on p.id = e.attacker
+    ), '[]'::jsonb),
     'maintenance', coalesce((
       select jsonb_build_object(
         'active', coalesce(s.maintenance, false),
@@ -592,14 +767,14 @@ grant execute on function public.world_state() to authenticated;
 -- PvP (solo entre regiones desbloqueadas)
 -- ============================================================
 
-create or replace function public.attack_rival(target_id uuid)
+create or replace function public.resolve_rival_battle(p_attacker uuid, target_id uuid)
 returns jsonb
 language plpgsql
 security definer
 set search_path = public
 as $fn$
 declare
-  me uuid := auth.uid();
+  me uuid := p_attacker;
   a public.profiles%rowtype;
   d public.profiles%rowtype;
   a_power numeric;
@@ -751,20 +926,33 @@ begin
 end;
 $fn$;
 
+revoke all on function public.resolve_rival_battle(uuid, uuid) from public, anon, authenticated;
+
+create or replace function public.attack_rival(target_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+begin
+  return public.resolve_rival_battle(auth.uid(), target_id);
+end;
+$fn$;
+
 grant execute on function public.attack_rival(uuid) to authenticated;
 
 -- ============================================================
 -- Incursiones contra aldeas NPC
 -- ============================================================
 
-create or replace function public.attack_npc(npc_id uuid)
+create or replace function public.resolve_npc_battle(p_attacker uuid, npc_id uuid)
 returns jsonb
 language plpgsql
 security definer
 set search_path = public
 as $fn$
 declare
-  me uuid := auth.uid();
+  me uuid := p_attacker;
   a public.profiles%rowtype;
   n public.npcs%rowtype;
   a_power numeric;
@@ -863,20 +1051,33 @@ begin
 end;
 $fn$;
 
+revoke all on function public.resolve_npc_battle(uuid, uuid) from public, anon, authenticated;
+
+create or replace function public.attack_npc(npc_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+begin
+  return public.resolve_npc_battle(auth.uid(), npc_id);
+end;
+$fn$;
+
 grant execute on function public.attack_npc(uuid) to authenticated;
 
 -- ============================================================
 -- Conquista del castillo del rey
 -- ============================================================
 
-create or replace function public.attack_castle(castle_id uuid)
+create or replace function public.resolve_castle_battle(p_attacker uuid, castle_id uuid)
 returns jsonb
 language plpgsql
 security definer
 set search_path = public
 as $fn$
 declare
-  me uuid := auth.uid();
+  me uuid := p_attacker;
   a public.profiles%rowtype;
   o public.profiles%rowtype;
   c public.castles%rowtype;
@@ -1044,7 +1245,229 @@ begin
 end;
 $fn$;
 
+revoke all on function public.resolve_castle_battle(uuid, uuid) from public, anon, authenticated;
+
+create or replace function public.attack_castle(castle_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+begin
+  return public.resolve_castle_battle(auth.uid(), castle_id);
+end;
+$fn$;
+
 grant execute on function public.attack_castle(uuid) to authenticated;
+
+-- ============================================================
+-- Marchas entre regiones: portales Mundo, caminos y expediciones
+-- ============================================================
+
+create or replace function public.resolve_expeditions()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  e public.expeditions%rowtype;
+  res jsonb;
+  changed integer := 0;
+begin
+  for e in
+    select * from public.expeditions
+    where status = 'outbound' and arrive_at <= now()
+    order by arrive_at
+    for update skip locked
+  loop
+    begin
+      if e.target_type = 'player' then
+        res := public.resolve_rival_battle(e.attacker, e.target_id);
+      elsif e.target_type = 'npc' then
+        res := public.resolve_npc_battle(e.attacker, e.target_id);
+        if coalesce((res->>'win')::boolean, false) then
+          insert into public.world_events (attacker, target, winner, loot, text)
+          values (
+            (select coalesce(nullif(p.username, ''), 'Señor sin nombre') from public.profiles p where p.id = e.attacker),
+            e.target_name,
+            'attacker',
+            coalesce((res->>'loot')::integer, 0),
+            coalesce(res->>'text', 'Incursión completada')
+          );
+        end if;
+      else
+        res := public.resolve_castle_battle(e.attacker, e.target_id);
+      end if;
+    exception when others then
+      res := jsonb_build_object(
+        'win', false,
+        'error', true,
+        'text', case
+          when SQLERRM = 'target shielded' then 'El objetivo activó un escudo y la marcha regresa sin combatir.'
+          when SQLERRM = 'region locked' then 'La región fue bloqueada y la marcha regresa sin combatir.'
+          when SQLERRM = 'target not found' or SQLERRM = 'npc not found' or SQLERRM = 'castle not found'
+            then 'El objetivo ya no existe y la marcha regresa sin combatir.'
+          when SQLERRM = 'cooldown' then 'El objetivo aún estaba en tiempo de espera y la marcha regresa.'
+          when SQLERRM = 'no troops' then 'No quedaban tropas disponibles al llegar.'
+          when SQLERRM = 'already yours' then 'El castillo ya era tuyo al llegar.'
+          else 'La marcha no pudo combatir: ' || SQLERRM
+        end
+      );
+    end;
+
+    update public.expeditions
+      set status = 'returning',
+          result = res,
+          resolved_at = now(),
+          return_at = e.arrive_at + make_interval(secs => e.travel_seconds)
+      where id = e.id;
+    changed := changed + 1;
+  end loop;
+
+  update public.expeditions
+    set status = 'done'
+    where status = 'returning' and return_at <= now();
+
+  delete from public.expeditions
+    where status = 'done' and resolved_at < now() - interval '7 days';
+
+  return changed;
+end;
+$fn$;
+
+revoke all on function public.resolve_expeditions() from public, anon, authenticated;
+
+create or replace function public.start_expedition(p_target_type text, p_target_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  a public.profiles%rowtype;
+  d public.profiles%rowtype;
+  n public.npcs%rowtype;
+  c public.castles%rowtype;
+  target_region integer;
+  target_x numeric;
+  target_y numeric;
+  target_name text;
+  path jsonb;
+  dist numeric;
+  move_speed numeric := 1;
+  secs integer;
+  start_at timestamptz := now();
+  row_out public.expeditions%rowtype;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  if p_target_type not in ('player', 'npc', 'castle') then raise exception 'invalid target'; end if;
+
+  perform public.resolve_expeditions();
+
+  select * into a from public.profiles where id = me for update;
+  if not found then raise exception 'attacker profile missing'; end if;
+  if a.region_id is null or a.x is null or a.y is null then raise exception 'no village'; end if;
+
+  if exists (
+    select 1 from public.expeditions e
+    where e.attacker = me and e.status in ('outbound', 'returning')
+  ) then
+    raise exception 'expedition active';
+  end if;
+
+  if p_target_type = 'player' then
+    select * into d from public.profiles where id = p_target_id;
+    if not found then raise exception 'target not found'; end if;
+    if d.id = me then raise exception 'cannot attack yourself'; end if;
+    if coalesce(d.is_admin, false) then raise exception 'target not found'; end if;
+    if d.shield_until is not null and d.shield_until > now() then raise exception 'target shielded'; end if;
+    if exists (
+      select 1 from public.pvp_hits h
+      where h.attacker = me and h.target = p_target_id and h.last_hit > now() - interval '5 minutes'
+    ) then raise exception 'cooldown'; end if;
+
+    target_region := d.region_id;
+    target_x := d.x;
+    target_y := d.y;
+    target_name := coalesce(nullif(d.username, ''), 'Señor sin nombre');
+  elsif p_target_type = 'npc' then
+    select * into n from public.npcs where id = p_target_id;
+    if not found then raise exception 'npc not found'; end if;
+    if exists (
+      select 1 from public.npc_hits h
+      where h.attacker = me and h.npc = p_target_id and h.last_hit > now() - interval '5 minutes'
+    ) then raise exception 'cooldown'; end if;
+
+    target_region := n.region_id;
+    target_x := n.x;
+    target_y := n.y;
+    target_name := n.name;
+  else
+    select * into c from public.castles where id = p_target_id;
+    if not found then raise exception 'castle not found'; end if;
+    if c.owner = me then raise exception 'already yours'; end if;
+    if exists (
+      select 1 from public.castle_hits h
+      where h.attacker = me and h.castle = p_target_id and h.last_hit > now() - interval '10 minutes'
+    ) then raise exception 'cooldown'; end if;
+
+    target_region := c.region_id;
+    target_x := c.x;
+    target_y := c.y;
+    target_name := c.name;
+  end if;
+
+  if target_x is null or target_y is null then raise exception 'target not found'; end if;
+  if exists (
+    select 1 from public.regions r
+    where r.id in (a.region_id, target_region) and r.locked
+  ) then raise exception 'region locked'; end if;
+
+  select coalesce(least(10, greatest(0.1, s.movement_speed)), 1)
+    into move_speed
+    from public.world_settings s where s.id = 1;
+  move_speed := coalesce(move_speed, 1);
+
+  path := public.expedition_path(
+    a.region_id, target_region,
+    a.x, a.y,
+    target_x, target_y
+  );
+  dist := public.expedition_distance(path);
+  secs := greatest(10, least(240, round(dist / (45 * move_speed))::integer));
+
+  insert into public.expeditions (
+    attacker, target_type, target_id, target_name,
+    from_region, to_region, from_x, from_y, to_x, to_y,
+    path, status, depart_at, arrive_at, return_at, travel_seconds, speed
+  ) values (
+    me, p_target_type, p_target_id, target_name,
+    a.region_id, target_region, a.x, a.y, target_x, target_y,
+    path, 'outbound', start_at,
+    start_at + make_interval(secs => secs),
+    start_at + make_interval(secs => secs * 2),
+    secs, move_speed
+  )
+  returning * into row_out;
+
+  return jsonb_build_object(
+    'ok', true,
+    'id', row_out.id,
+    'target', target_name,
+    'target_type', p_target_type,
+    'path', row_out.path,
+    'travel_seconds', row_out.travel_seconds,
+    'depart_at', row_out.depart_at,
+    'arrive_at', row_out.arrive_at,
+    'return_at', row_out.return_at,
+    'move_speed', move_speed
+  );
+end;
+$fn$;
+
+grant execute on function public.start_expedition(text, uuid) to authenticated;
 
 -- ============================================================
 -- Mercado entre jugadores (trueque de recursos y tropas por KB)
@@ -1352,6 +1775,8 @@ begin
   update public.regions
     set points = newpts,
         bbox = jsonb_build_object('x0', minx, 'y0', miny, 'x1', maxx, 'y1', maxy),
+        world_x = least(0.995, greatest(0.005, coalesce(world_x, (minx + maxx) / 2) + dx)),
+        world_y = least(0.995, greatest(0.005, coalesce(world_y, (miny + maxy) / 2) + dy)),
         updated_at = now()
     where id = rid;
 
@@ -1666,6 +2091,23 @@ end;
 $fn$;
 
 grant execute on function public.admin_set_resource_speed(numeric) to authenticated;
+
+create or replace function public.admin_set_movement_speed(p_speed numeric)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v numeric := least(10, greatest(0.1, coalesce(p_speed, 1)));
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+  update public.world_settings set movement_speed = v, updated_at = now() where id = 1;
+  return jsonb_build_object('ok', true, 'speed', v);
+end;
+$fn$;
+
+grant execute on function public.admin_set_movement_speed(numeric) to authenticated;
 
 create or replace function public.maintenance_enter(p_password text)
 returns boolean

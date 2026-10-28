@@ -1092,31 +1092,27 @@
   function resourcePanel() {
     var prod = totalProduction(state);
     var limit = storageLimit(state.buildings);
-    var race = RACES[state.race];
     return (
       '<aside class="col">' +
-        '<div class="panel">' +
-          '<div class="panel-head">' +
-            "<h2>Recursos</h2>" +
-            '<span class="hint">x' + race.prod.toFixed(2) + " prod.</span>" +
-          "</div>" +
+        '<div class="panel resource-panel">' +
           '<div class="panel-body">' +
             '<div class="res-grid">' +
               RESOURCES.map(function (res) {
                 return (
                   '<div class="res">' +
-                    '<div class="name">' + RES_ICON[res] + " " + RES_LABEL[res] + "</div>" +
-                    '<div class="amount" id="res-' + res + '">' + num(state.res[res]) + "</div>" +
-                    '<div class="rate">+' + Math.round(prod[res]) + " /min</div>" +
+                    '<span class="name">' + RES_ICON[res] + " " + RES_LABEL[res] + "</span>" +
+                    '<b class="amount" id="res-' + res + '">' + num(state.res[res]) + "</b>" +
+                    '<span class="rate">+' + Math.round(prod[res]) + "/m</span>" +
                   "</div>"
                 );
               }).join("") +
             "</div>" +
-            '<div class="info-line"><span>Almacenamiento</span><b id="storage-line">' +
-              num(Math.floor(Math.max.apply(null, RESOURCES.map(function (r) { return state.res[r]; })))) +
-              " / " + num(limit) + "</b></div>" +
-            '<div class="info-line kb-line"><span>KB · moneda del rey</span><b id="kb-line">' +
-              num((session && session.kb) || 0) + "</b></div>" +
+            '<div class="res-meta">' +
+              '<span>Almacén <b id="storage-line">' +
+                num(Math.floor(Math.max.apply(null, RESOURCES.map(function (r) { return state.res[r]; })))) +
+                "/" + num(limit) + "</b></span>" +
+              '<span>KB <b id="kb-line">' + num((session && session.kb) || 0) + "</b></span>" +
+            "</div>" +
           "</div>" +
         "</div>" +
       "</aside>"

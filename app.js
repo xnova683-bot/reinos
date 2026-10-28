@@ -2976,12 +2976,23 @@
       var players = world.players.filter(function (player) {
         if (player.admin) return false;
         if (String(player.id) === String(session.userId)) return false;
-        return String(player.region) === String(open.id) &&
-          typeof player.x === "number" && typeof player.y === "number";
+        var sameRegion = String(player.region) === String(open.id);
+        var inPoly =
+          typeof player.x === "number" &&
+          typeof player.y === "number" &&
+          pointInRegion(open, { x: player.x, y: player.y });
+        return sameRegion || inPoly;
+      }).filter(function (player) {
+        return typeof player.x === "number" && typeof player.y === "number";
       });
       var npcs = world.npcs.filter(function (npc) {
-        return String(npc.region) === String(open.id) &&
-          typeof npc.x === "number" && typeof npc.y === "number";
+        if (String(npc.region) === String(open.id)) return true;
+        if (typeof npc.x === "number" && typeof npc.y === "number") {
+          return pointInRegion(open, { x: npc.x, y: npc.y });
+        }
+        return false;
+      }).filter(function (npc) {
+        return typeof npc.x === "number" && typeof npc.y === "number";
       });
       var castle = castleOf(open.id);
       var mineHere =

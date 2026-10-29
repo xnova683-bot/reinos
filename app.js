@@ -2609,7 +2609,9 @@
     });
     if (nextEvent) {
       marchSyncTimer = setTimeout(function () {
-        syncWorld();
+        syncWorld().then(function () {
+          if (view === "mapa") renderGame();
+        });
       }, Math.max(800, nextEvent - nowMs + 900));
     }
     if (!list.length) return;
@@ -2633,6 +2635,11 @@
           if (!expedition && String(candidate.id) === String(id)) expedition = candidate;
         });
         if (!expedition) {
+          if (node.style) node.style.display = "none";
+          continue;
+        }
+        var backAt = Date.parse(expedition.return_at);
+        if (isFinite(backAt) && now >= backAt) {
           if (node.style) node.style.display = "none";
           continue;
         }

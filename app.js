@@ -1318,7 +1318,6 @@
   var maintGateState = false;
   var marchTimer = null;
   var marchSyncTimer = null;
-  var marchLastCull = 0;
   var seenExpeditionResults = {};
   var expeditionRoadCache = {};
 
@@ -2509,17 +2508,31 @@
     );
   }
 
+  function marchProgress(expedition, nowMs) {
+    var at = isFinite(nowMs) ? nowMs : Date.now();
+    var depart = Date.parse(expedition.depart_at);
+    var arrive = Date.parse(expedition.arrive_at);
+    var back = Date.parse(expedition.return_at);
+    if (isFinite(depart) && isFinite(arrive) && at < arrive) {
+      return clamp((at - depart) / Math.max(1, arrive - depart), 0, 1);
+    }
+    if (isFinite(arrive) && isFinite(back) && at < back) {
+      return 1 - clamp((at - arrive) / Math.max(1, back - arrive), 0, 1);
+    }
+    return 1;
+  }
+
   function expeditionMarkers(expedition) {
     var points = expeditionRoadPoints(expedition);
     if (!points.length) return "";
-    var first = points[0];
+    var first = marchPointAt(points, marchProgress(expedition)) || points[0];
     var own = session && String(expedition.attacker) === String(session.userId);
     var race = expedition.race && RACES[expedition.race] ? expedition.race : "";
     return (
       '<div class="march-marker ' + race + (own ? " own" : "") + '" data-march-id="' +
         escapeHtml(String(expedition.id)) + '" data-mx="' + first.x.toFixed(5) + '" data-my="' +
-        first.y.toFixed(5) + '" style="left:' + (first.x * 100).toFixed(2) + "%;top:" +
-        (first.y * 100).toFixed(2) + '%">' +
+        first.y.toFixed(5) + '" style="transform:translate(' + (first.x * MAP_W).toFixed(1) +
+        "px," + (first.y * MAP_H).toFixed(1) + 'px) translate(-50%,-50%) scale(var(--inv,1))">' +
         '<span class="march-pin" aria-hidden="true">\u2694\ufe0f</span>' +
         '<span class="march-label">' + escapeHtml(expedition.attacker_name || "Marcha") +
           " · " + escapeHtml(expedition.target_name || "objetivo") + "</span>" +
@@ -2623,22 +2636,11 @@
           if (node.style) node.style.display = "none";
           continue;
         }
-        var depart = Date.parse(expedition.depart_at);
-        var arrive = Date.parse(expedition.arrive_at);
-        var back = Date.parse(expedition.return_at);
-        var fraction = 0;
-        if (isFinite(depart) && isFinite(arrive) && now < arrive) {
-          fraction = clamp((now - depart) / Math.max(1, arrive - depart), 0, 1);
-        } else if (isFinite(arrive) && isFinite(back) && now < back) {
-          fraction = 1 - clamp((now - arrive) / Math.max(1, back - arrive), 0, 1);
-        } else {
-          fraction = 1;
-        }
-        var point = marchPointAt(expeditionRoadPoints(expedition), fraction);
+        var point = marchPointAt(expeditionRoadPoints(expedition), marchProgress(expedition, now));
         if (!point) continue;
         if (node.style) {
-          node.style.left = (point.x * 100).toFixed(2) + "%";
-          node.style.top = (point.y * 100).toFixed(2) + "%";
+          node.style.transform = "translate(" + (point.x * MAP_W).toFixed(1) + "px," +
+            (point.y * MAP_H).toFixed(1) + "px) translate(-50%,-50%) scale(var(--inv,1))";
         }
         node.setAttribute("data-mx", point.x.toFixed(5));
         node.setAttribute("data-my", point.y.toFixed(5));
@@ -2646,10 +2648,6 @@
           if (expedition.status === "returning") node.classList.add("returning");
           else node.classList.remove("returning");
         }
-      }
-      if (now - marchLastCull > 350) {
-        marchLastCull = now;
-        cullMarkers();
       }
     }
     marchTimer = setInterval(tick, 90);
@@ -3423,7 +3421,7 @@
     var h = mapWrapEl.clientHeight || 480;
     var nodes;
     try {
-      nodes = mapWrapEl.querySelectorAll(".marker, .region-point, .mundo-marker, .march-marker");
+      nodes = mapWrapEl.querySelectorAll(".marker, .region-point, .mundo-marker");
     } catch (err) {
       return;
     }

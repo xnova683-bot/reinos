@@ -4323,7 +4323,7 @@
     bindAdminSettings();
     bindMarketEvents();
     initMap();
-    stopMarchAnimation();
+    startMarchAnimation();
   }
 
   /* ---------------- boot ---------------- */

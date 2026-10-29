@@ -1103,6 +1103,39 @@ body.race-enanos .map {
   user-select: none;
 }
 
+.map-tile {
+  position: absolute;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+  user-select: none;
+}
+
+.zone-lock {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border: 1px dashed rgba(150, 150, 170, 0.35);
+  background: rgba(6, 6, 10, 0.62);
+  color: #c9c9d6;
+  pointer-events: none;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.zone-lock-icon {
+  font-size: 1.7rem;
+  opacity: 0.85;
+}
+
+.zone-lock-name {
+  font-size: 0.72rem;
+}
+
 .region-svg {
   position: absolute;
   inset: 0;
@@ -1214,6 +1247,17 @@ body.race-enanos .map {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.admin-row .admin-row-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.3rem;
+  overflow: visible;
+}
+
+.admin-row .admin-row-actions .btn {
+  flex: none;
 }
 
 .btn.small {

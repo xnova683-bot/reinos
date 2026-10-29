@@ -40,6 +40,7 @@ create table if not exists public.regions (
 
 alter table public.regions add column if not exists world_x numeric;
 alter table public.regions add column if not exists world_y numeric;
+alter table public.regions add column if not exists image_url text;
 update public.regions
   set world_x = ((bbox->>'x0')::numeric + (bbox->>'x1')::numeric) / 2
     - ((bbox->>'x1')::numeric - (bbox->>'x0')::numeric) * 0.22,
@@ -234,17 +235,11 @@ declare
   row integer;
   cx numeric;
   cy numeric;
-  rx numeric := 0.075;
-  ry numeric := 0.095;
-  ang numeric;
+  x0 numeric;
+  y0 numeric;
+  x1 numeric;
+  y1 numeric;
   pts jsonb;
-  k integer;
-  px numeric;
-  py numeric;
-  minx numeric;
-  maxx numeric;
-  miny numeric;
-  maxy numeric;
 begin
   if (select count(*) from public.regions) > 0 then
     return;
@@ -253,31 +248,26 @@ begin
   for i in 0..19 loop
     col := i % 5;
     row := i / 5;
-    cx := 0.1 + col * 0.2 + (row % 2) * 0.025;
-    cy := 0.14 + row * 0.24;
-    pts := '[]'::jsonb;
-    minx := 2; maxx := -1; miny := 2; maxy := -1;
-
-    for k in 0..5 loop
-      ang := radians(30 + k * 60);
-      px := cx + rx * cos(ang) * (1 + 0.08 * sin((i + 1) * 1.7));
-      py := cy + ry * sin(ang);
-      minx := least(minx, px);
-      maxx := greatest(maxx, px);
-      miny := least(miny, py);
-      maxy := greatest(maxy, py);
-      pts := pts || jsonb_build_array(jsonb_build_array(px, py));
-    end loop;
+    x0 := col * 0.2 + 0.004;
+    y0 := row * 0.25 + 0.004;
+    x1 := (col + 1) * 0.2 - 0.004;
+    y1 := (row + 1) * 0.25 - 0.004;
+    cx := (x0 + x1) / 2;
+    cy := (y0 + y1) / 2;
+    pts := jsonb_build_array(
+      jsonb_build_array(x0, y0), jsonb_build_array(x1, y0),
+      jsonb_build_array(x1, y1), jsonb_build_array(x0, y1)
+    );
 
     insert into public.regions (name, points, bbox, locked, capacity, world_x, world_y)
     values (
       names[i + 1],
       pts,
-      jsonb_build_object('x0', minx, 'y0', miny, 'x1', maxx, 'y1', maxy),
+      jsonb_build_object('x0', x0, 'y0', y0, 'x1', x1, 'y1', y1),
       i > 1,
       25,
-      (minx + maxx) / 2 - (maxx - minx) * 0.22,
-      (miny + maxy) / 2 + (maxy - miny) * 0.18
+      cx - (x1 - x0) * 0.22,
+      cy + (y1 - y0) * 0.18
     );
   end loop;
 end;
@@ -312,15 +302,10 @@ begin
     bh := (region.bbox->>'y1')::numeric - oy;
 
     for k in 0..2 loop
-      if region.id = 1 then
-        sx := tx[k + 1];
-        sy := ty[k + 1];
-      else
-        sx := bx + bw / 2 + (tx[k + 1] - 0.5006237573308003) * 0.8 * bw / 0.766161189992368;
-        sy := oy + bh / 2 + (ty[k + 1] - 0.46891129262306985) * 0.8 * bh / 0.786633294702648;
-        sx := least(bx + bw - 0.002, greatest(bx + 0.002, sx));
-        sy := least(oy + bh - 0.002, greatest(oy + 0.002, sy));
-      end if;
+      sx := bx + bw / 2 + (tx[k + 1] - 0.5006237573308003) * 0.8 * bw / 0.766161189992368;
+      sy := oy + bh / 2 + (ty[k + 1] - 0.46891129262306985) * 0.8 * bh / 0.786633294702648;
+      sx := least(bx + bw - 0.002, greatest(bx + 0.002, sx));
+      sy := least(oy + bh - 0.002, greatest(oy + 0.002, sy));
 
       insert into public.npcs (name, region_id, x, y, power)
       values (
@@ -349,13 +334,8 @@ begin
   end if;
 
   for region in select * from public.regions order by id loop
-    if region.id = 1 then
-      cx := 0.5006237573308003;
-      cy := 0.46891129262306985;
-    else
-      cx := ((region.bbox->>'x0')::numeric + (region.bbox->>'x1')::numeric) / 2;
-      cy := ((region.bbox->>'y0')::numeric + (region.bbox->>'y1')::numeric) / 2;
-    end if;
+    cx := ((region.bbox->>'x0')::numeric + (region.bbox->>'x1')::numeric) / 2;
+    cy := ((region.bbox->>'y0')::numeric + (region.bbox->>'y1')::numeric) / 2;
 
     insert into public.castles (region_id, name, x, y, power, loot)
     values (
@@ -578,21 +558,12 @@ begin
         cx := bx + bw / 2;
         cy := oy + bh / 2;
       end if;
-      if reg.id = 1 then
-        sw := 1;
-        sh := 1;
-        lx := 0.01;
-        hx := 0.99;
-        ly := 0.01;
-        hy := 0.99;
-      else
-        sw := bw;
-        sh := bh;
-        lx := bx + 0.002;
-        hx := bx + bw - 0.002;
-        ly := oy + 0.002;
-        hy := oy + bh - 0.002;
-      end if;
+      sw := bw;
+      sh := bh;
+      lx := bx + 0.002;
+      hx := bx + bw - 0.002;
+      ly := oy + 0.002;
+      hy := oy + bh - 0.002;
       j := ('x' || substr(md5(new.id::text), 1, 12))::bit(48)::bigint;
       ang := n * 2.399963 + ((j % 100) / 100.0 - 0.5) * 0.24;
       rad := 0.12 + 0.34 * sqrt((n + 0.5) / greatest(reg.capacity, 25)::numeric);
@@ -724,6 +695,7 @@ begin
         'bbox', r.bbox,
         'world_x', r.world_x,
         'world_y', r.world_y,
+        'image_url', r.image_url,
         'locked', r.locked,
         'capacity', r.capacity,
         'villages', (select count(*) from public.profiles p
@@ -1594,8 +1566,7 @@ begin
   ) then raise exception 'region locked'; end if;
 
   hops := public.region_hops(a.region_id, target_region);
-  if hops > 1 then raise exception 'region too far'; end if;
-  if hops = 1 then
+  if hops >= 1 then
     food_cost := 60 * hops;
     if coalesce((a.state->'res'->>'comida')::numeric, 0) < food_cost then
       raise exception 'not enough food';
@@ -2428,6 +2399,22 @@ grant execute on function public.maintenance_enter(text) to authenticated;
 grant execute on function public.admin_move_region(integer, numeric, numeric) to authenticated;
 grant execute on function public.admin_move_village(uuid, numeric, numeric) to authenticated;
 grant execute on function public.admin_set_region_locked(integer, boolean) to authenticated;
+
+create or replace function public.admin_set_region_image(rid integer, url text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+begin
+  if not public.is_admin() then raise exception 'not admin'; end if;
+  update public.regions set image_url = nullif(url, ''), updated_at = now() where id = rid;
+  if not found then raise exception 'region not found'; end if;
+  return jsonb_build_object('ok', true, 'image_url', nullif(url, ''));
+end;
+$fn$;
+
+grant execute on function public.admin_set_region_image(integer, text) to authenticated;
 grant execute on function public.admin_rename_region(integer, text) to authenticated;
 grant execute on function public.admin_set_map_image(text) to authenticated;
 

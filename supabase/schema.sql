@@ -97,6 +97,8 @@ create table if not exists public.expeditions (
   travel_seconds integer not null check (travel_seconds > 0),
   speed numeric not null default 1,
   result jsonb,
+  troops jsonb,
+  survivors jsonb,
   resolved_at timestamptz,
   created_at timestamptz not null default now()
 );
@@ -105,6 +107,9 @@ create index if not exists expeditions_active_idx
   on public.expeditions (status, arrive_at);
 create index if not exists expeditions_attacker_idx
   on public.expeditions (attacker, created_at desc);
+
+alter table public.expeditions add column if not exists troops jsonb;
+alter table public.expeditions add column if not exists survivors jsonb;
 
 alter table public.expeditions enable row level security;
 
@@ -702,6 +707,8 @@ begin
         'to_y', e.to_y,
         'path', e.path,
         'status', e.status,
+        'troops', e.troops,
+        'survivors', e.survivors,
         'depart_at', e.depart_at,
         'arrive_at', e.arrive_at,
         'return_at', e.return_at,
@@ -1295,6 +1302,10 @@ as $fn$
 declare
   e public.expeditions%rowtype;
   res jsonb;
+  home_troops jsonb;
+  surv jsonb;
+  merged jsonb;
+  tkey text;
   troops_left bigint;
   changed integer := 0;
 begin
@@ -1304,6 +1315,15 @@ begin
     order by arrive_at
     for update skip locked
   loop
+    home_troops := '{}'::jsonb;
+    if e.troops is not null then
+      select p.state->'troops' into home_troops from public.profiles p where p.id = e.attacker;
+      home_troops := coalesce(home_troops, '{}'::jsonb);
+      update public.profiles
+        set state = jsonb_set(state, '{troops}', e.troops, true)
+        where id = e.attacker;
+    end if;
+
     begin
       if e.target_type = 'player' then
         res := public.resolve_rival_battle(e.attacker, e.target_id);
@@ -1339,18 +1359,33 @@ begin
       );
     end;
 
-    select coalesce(sum(coalesce((t.value)::numeric, 0)), 0)
-      into troops_left
-      from jsonb_each(case
-        when jsonb_typeof((select p.state->'troops' from public.profiles p where p.id = e.attacker)) = 'object'
-          then (select p.state->'troops' from public.profiles p where p.id = e.attacker)
-        else '{}'::jsonb
-      end) as t;
+    select p.state->'troops' into surv from public.profiles p where p.id = e.attacker;
+    surv := coalesce(surv, '{}'::jsonb);
+
+    troops_left := coalesce((surv->>'lanceros')::bigint, 0)
+      + coalesce((surv->>'arqueros')::bigint, 0)
+      + coalesce((surv->>'jinetes')::bigint, 0);
+
+    if e.troops is not null then
+      merged := home_troops;
+      foreach tkey in array array['lanceros', 'arqueros', 'jinetes'] loop
+        merged := jsonb_set(
+          merged,
+          array[tkey],
+          to_jsonb(coalesce((home_troops->>tkey)::integer, 0) + coalesce((surv->>tkey)::integer, 0)),
+          true
+        );
+      end loop;
+      update public.profiles
+        set state = jsonb_set(state, '{troops}', merged, true), updated_at = now()
+        where id = e.attacker;
+    end if;
 
     if troops_left > 0 then
       update public.expeditions
         set status = 'returning',
             result = res,
+            survivors = surv,
             resolved_at = now(),
             return_at = e.arrive_at + make_interval(secs => e.travel_seconds)
         where id = e.id;
@@ -1358,6 +1393,7 @@ begin
       update public.expeditions
         set status = 'done',
             result = res,
+            survivors = surv,
             resolved_at = now(),
             return_at = now()
         where id = e.id;
@@ -1378,7 +1414,9 @@ $fn$;
 
 revoke all on function public.resolve_expeditions() from public, anon, authenticated;
 
-create or replace function public.start_expedition(p_target_type text, p_target_id uuid)
+drop function if exists public.start_expedition(text, uuid);
+
+create or replace function public.start_expedition(p_target_type text, p_target_id uuid, p_troops jsonb default null)
 returns jsonb
 language plpgsql
 security definer
@@ -1400,6 +1438,12 @@ declare
   secs integer;
   start_at timestamptz := now();
   row_out public.expeditions%rowtype;
+  sent jsonb := '{}'::jsonb;
+  home jsonb;
+  tkey text;
+  want integer;
+  have integer;
+  total integer := 0;
 begin
   if me is null then raise exception 'not authenticated'; end if;
   if p_target_type not in ('player', 'npc', 'castle') then raise exception 'invalid target'; end if;
@@ -1467,6 +1511,29 @@ begin
       and r.id is distinct from a.region_id
   ) then raise exception 'region locked'; end if;
 
+  if p_troops is null or jsonb_typeof(p_troops) <> 'object' then
+    sent := coalesce(a.state->'troops', '{}'::jsonb);
+  else
+    foreach tkey in array array['lanceros', 'arqueros', 'jinetes'] loop
+      want := greatest(0, coalesce((p_troops->>tkey)::integer, 0));
+      sent := jsonb_set(sent, array[tkey], to_jsonb(want), true);
+    end loop;
+  end if;
+
+  home := coalesce(a.state->'troops', '{}'::jsonb);
+  foreach tkey in array array['lanceros', 'arqueros', 'jinetes'] loop
+    want := coalesce((sent->>tkey)::integer, 0);
+    have := coalesce((home->>tkey)::integer, 0);
+    if want > have then raise exception 'not enough troops'; end if;
+    total := total + want;
+    home := jsonb_set(home, array[tkey], to_jsonb(have - want), true);
+  end loop;
+  if total <= 0 then raise exception 'no troops'; end if;
+
+  update public.profiles
+    set state = jsonb_set(state, '{troops}', home, true), updated_at = now()
+    where id = me;
+
   select coalesce(least(10, greatest(0.1, s.movement_speed)), 1)
     into move_speed
     from public.world_settings s where s.id = 1;
@@ -1483,14 +1550,14 @@ begin
   insert into public.expeditions (
     attacker, target_type, target_id, target_name,
     from_region, to_region, from_x, from_y, to_x, to_y,
-    path, status, depart_at, arrive_at, return_at, travel_seconds, speed
+    path, status, depart_at, arrive_at, return_at, travel_seconds, speed, troops
   ) values (
     me, p_target_type, p_target_id, target_name,
     a.region_id, target_region, a.x, a.y, target_x, target_y,
     path, 'outbound', start_at,
     start_at + make_interval(secs => secs),
     start_at + make_interval(secs => secs * 2),
-    secs, move_speed
+    secs, move_speed, sent
   )
   returning * into row_out;
 
@@ -1504,12 +1571,14 @@ begin
     'depart_at', row_out.depart_at,
     'arrive_at', row_out.arrive_at,
     'return_at', row_out.return_at,
-    'move_speed', move_speed
+    'move_speed', move_speed,
+    'troops', sent,
+    'distance', round(dist, 3)
   );
 end;
 $fn$;
 
-grant execute on function public.start_expedition(text, uuid) to authenticated;
+grant execute on function public.start_expedition(text, uuid, jsonb) to authenticated;
 
 -- ============================================================
 -- Mercado entre jugadores (trueque de recursos y tropas por KB)

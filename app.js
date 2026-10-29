@@ -1295,6 +1295,7 @@
   var castleTarget = null;
   var pvpResult = null;
   var pvpBusy = false;
+  var troopDraft = null;
   var mapFitted = false;
   var adminMode = false;
   var itemDrag = null;
@@ -1517,7 +1518,69 @@
     return Math.max(0, Math.ceil((at - Date.now()) / 1000));
   }
 
-  function startMarch(targetType, targetId) {
+  function marchTargetKey() {
+    if (castleTarget) return "castle:" + castleTarget.id;
+    if (npcTarget) return "npc:" + npcTarget.id;
+    if (pvpTarget) return "player:" + pvpTarget.id;
+    return "";
+  }
+
+  function ensureDraft(key) {
+    var draft = troopDraft;
+    if (!draft || draft.key !== key) {
+      draft = { key: key, troops: {} };
+      Object.keys(TROOPS).forEach(function (k) {
+        draft.troops[k] = Math.max(0, Math.floor(Number(state.troops[k]) || 0));
+      });
+      troopDraft = draft;
+    }
+    Object.keys(TROOPS).forEach(function (k) {
+      var have = Math.max(0, Math.floor(Number(state.troops[k]) || 0));
+      var want = Math.floor(Number(draft.troops[k]) || 0);
+      draft.troops[k] = clamp(want, 0, have);
+    });
+    return draft.troops;
+  }
+
+  function draftTotal(draft) {
+    return armyCount({ race: state.race, troops: draft });
+  }
+
+  function draftPower(draft) {
+    return armyPower({ race: state.race, troops: draft });
+  }
+
+  function troopSummary(t) {
+    if (!t) return "";
+    var parts = [];
+    Object.keys(TROOPS).forEach(function (k) {
+      var count = Math.max(0, Math.floor(Number(t[k]) || 0));
+      if (count > 0) parts.push(num(count) + " " + TROOPS[k].name.toLowerCase());
+    });
+    return parts.join(" · ");
+  }
+
+  function troopPicker(draft) {
+    var rows = Object.keys(TROOPS).map(function (key) {
+      var have = Math.max(0, Math.floor(Number(state.troops[key]) || 0));
+      return '<label class="troop-row"><span>' + TROOPS[key].name +
+        ' <em>(' + num(have) + ')</em></span>' +
+        '<input type="number" inputmode="numeric" min="0" max="' + have + '" step="1" value="' +
+        Math.floor(Number(draft[key]) || 0) + '" data-send="' + key + '"></label>';
+    }).join("");
+    return '<div class="troop-picker">' + rows +
+      '<div class="troop-total"><span>Enviar: <b>' + num(draftTotal(draft)) +
+        '</b> · Poder <b>' + num(draftPower(draft)) + '</b></span>' +
+        '<button type="button" class="btn small" data-send-all="1">Todo</button>' +
+        '<button type="button" class="btn small" data-send-none="1">Nada</button></div></div>';
+  }
+
+  function attackTroops(key) {
+    var draft = ensureDraft(key);
+    return draftTotal(draft) > 0 ? draft : null;
+  }
+
+  function startMarch(targetType, targetId, troops) {
     if (!isCloud() || pvpBusy) return;
     if (!targetId) return;
     pvpBusy = true;
@@ -1527,7 +1590,11 @@
       return api("/rest/v1/rpc/start_expedition", {
         method: "POST",
         token: session.token,
-        body: { p_target_type: targetType, p_target_id: targetId },
+        body: {
+          p_target_type: targetType,
+          p_target_id: targetId,
+          p_troops: troops || null,
+        },
       });
     }).then(function (result) {
       pvpBusy = false;
@@ -1537,6 +1604,7 @@
         else if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
         else if (message.indexOf("shielded") !== -1) message = "Ese jugador sigue protegido por su escudo.";
         else if (message.indexOf("cooldown") !== -1) message = "Ese objetivo está en tiempo de espera.";
+        else if (message.indexOf("not enough troops") !== -1) message = "No tienes suficientes tropas para ese destacamento.";
         else if (message.indexOf("no troops") !== -1) message = "No tienes tropas para atacar.";
         else if (message.indexOf("already yours") !== -1) message = "Ese castillo ya es tuyo.";
         else if (message.indexOf("cannot attack yourself") !== -1) message = "No puedes atacarte a ti mismo.";
@@ -1547,15 +1615,17 @@
         return;
       }
       var data = result.data || {};
+      troopDraft = null;
       pvpResult = {
         ok: true,
         win: true,
         text:
-          "Ejército en camino a " + (data.target || "el objetivo") +
+          "Destacamento en camino a " + (data.target || "el objetivo") +
+          (troopSummary(data.troops) ? " · " + troopSummary(data.troops) : "") +
           " · llegada en " + num(data.travel_seconds || 0) + " s. " +
-          "Al llegar combatirá y regresará por la misma ruta.",
+          "Al llegar combatirá y los supervivientes regresarán por la misma ruta.",
       };
-      return syncWorld().then(function () {
+      return refreshOwnProfile().then(syncWorld).then(function () {
         renderGame();
       });
     }).catch(function () {
@@ -1566,15 +1636,15 @@
   }
 
   function pvpAttack(targetId) {
-    startMarch("player", targetId);
+    startMarch("player", targetId, attackTroops("player:" + targetId));
   }
 
   function castleAttack(castleId) {
-    startMarch("castle", castleId);
+    startMarch("castle", castleId, attackTroops("castle:" + castleId));
   }
 
   function npcAttack(npcId) {
-    startMarch("npc", npcId);
+    startMarch("npc", npcId, attackTroops("npc:" + npcId));
   }
 
   function handleExpeditionResults() {
@@ -2923,7 +2993,12 @@
     currentRoadBends = {};
     currentRoadRegionId = null;
     var power = armyPower(state);
+    var pendingKey = marchTargetKey();
+    var sendDraft = pendingKey ? ensureDraft(pendingKey) : null;
+    var sendPower = sendDraft ? draftPower(sendDraft) : power;
+    var sendTotal = sendDraft ? draftTotal(sendDraft) : armyCount(state);
     var myMarch = activeExpedition();
+    var picker = sendDraft && !myMarch ? troopPicker(sendDraft) : "";
     var open = openRegionId ? regionById(openRegionId) : null;
     if (openRegionId && !open) openRegionId = null;
 
@@ -3092,7 +3167,7 @@
       var castleDefense = Number(castleTarget.defense) || Number(castleTarget.power) || 0;
       var castleLoot = Number(castleTarget.loot) || 0;
       var castleShare = Math.round(castleLoot / 4);
-      var castleOdds = Math.round(clamp((power / Math.max(1, castleDefense)) * 100, 1, 99));
+      var castleOdds = Math.round(clamp((sendPower / Math.max(1, castleDefense)) * 100, 1, 99));
       var castleMine = !!castleTarget.owner && String(castleTarget.owner) === String(session && session.userId);
       castleCard =
         '<div class="pvp-card castle-card">' +
@@ -3107,10 +3182,12 @@
             "<span>Éxito estimado: <b>" + num(castleOdds) + "%</b></span>" +
             (castleMine ? '<span class="pvp-warn">Este castillo es tuyo: eres el rey.</span>' : "") +
             (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
-            (power <= 0 && !castleMine ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
+            (armyCount(state) <= 0 && !castleMine ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
+            (!castleMine && armyCount(state) > 0 && sendTotal <= 0 ? '<span class="pvp-warn">Selecciona al menos una tropa para enviar.</span>' : "") +
           "</div>" +
+          picker +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="castle-attack-btn"' + (pvpBusy || castleMine || power <= 0 || myMarch ? " disabled" : "") + ">" +
+            '<button class="btn-primary" id="castle-attack-btn"' + (pvpBusy || castleMine || sendTotal <= 0 || myMarch ? " disabled" : "") + ">" +
               (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="castle-cancel-btn">Cancelar</button>' +
@@ -3122,7 +3199,7 @@
       var npcTierValue = npcTier(npcTarget);
       var npcLootValue = npcLoot(npcTarget);
       var npcShare = Math.round(npcLootValue / 4);
-      var npcOdds = Math.round(clamp((power / Math.max(1, Number(npcTarget.power))) * 100, 1, 99));
+      var npcOdds = Math.round(clamp((sendPower / Math.max(1, Number(npcTarget.power))) * 100, 1, 99));
       var npcRegion = regionById(npcTarget.region);
       npcCard =
         '<div class="pvp-card npc-card">' +
@@ -3134,10 +3211,12 @@
               num(npcShare) + " de oro, madera, comida y piedra).</span>" +
             "<span>Éxito estimado: <b>" + num(npcOdds) + "%</b></span>" +
             (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
-            (power <= 0 ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
+            (armyCount(state) <= 0 ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
+            (armyCount(state) > 0 && sendTotal <= 0 ? '<span class="pvp-warn">Selecciona al menos una tropa para enviar.</span>' : "") +
           "</div>" +
+          picker +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="npc-attack-btn"' + (pvpBusy || power <= 0 || myMarch ? " disabled" : "") + ">" +
+            '<button class="btn-primary" id="npc-attack-btn"' + (pvpBusy || sendTotal <= 0 || myMarch ? " disabled" : "") + ">" +
               (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="npc-cancel-btn">Cancelar</button>' +
@@ -3156,9 +3235,12 @@
             (targetRegion ? " · " + escapeHtml(targetRegion.name) : "") + "</span>" +
             (target.shield ? '<span class="pvp-warn">Escudo activo: no se puede atacar.</span>' : "") +
             (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
+            (armyCount(state) <= 0 ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
+            (armyCount(state) > 0 && sendTotal <= 0 ? '<span class="pvp-warn">Selecciona al menos una tropa para enviar.</span>' : "") +
           "</div>" +
+          picker +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="pvp-attack-btn"' + (target.shield || pvpBusy || myMarch ? " disabled" : "") + ">" +
+            '<button class="btn-primary" id="pvp-attack-btn"' + (target.shield || pvpBusy || sendTotal <= 0 || myMarch ? " disabled" : "") + ">" +
               (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="pvp-cancel-btn">Cancelar</button>' +
@@ -3181,6 +3263,12 @@
               (marchRegion ? " · " + escapeHtml(marchRegion.name) : "") + "</span>" +
             "<span>" + (outboundMarch ? "En camino; combate al llegar." : "Regresando de la batalla.") +
               " Quedan <b id=\"march-countdown\">" + num(eta) + "</b> s.</span>" +
+            (myMarch.troops && troopSummary(myMarch.troops)
+              ? "<span>Tropas enviadas: <b>" + escapeHtml(troopSummary(myMarch.troops)) + "</b></span>"
+              : "") +
+            (myMarch.survivors
+              ? "<span>Supervivientes: <b>" + escapeHtml(troopSummary(myMarch.survivors) || "ninguno") + "</b></span>"
+              : "") +
             '<span class="npc-meta">Velocidad del reino: <b>x' + Number(world.moveSpeed || 1).toFixed(2) + "</b></span>" +
           "</div>" +
           '<div class="pvp-actions"><span class="hint">Una marcha activa por jugador</span></div>' +
@@ -3767,6 +3855,35 @@
       renderGame();
     });
 
+    Array.prototype.forEach.call(app.querySelectorAll("[data-send]"), function (input) {
+      input.addEventListener("change", function () {
+        var key = marchTargetKey();
+        if (!key) return;
+        var draft = ensureDraft(key);
+        var tkey = input.getAttribute("data-send");
+        var have = Math.max(0, Math.floor(Number(state.troops[tkey]) || 0));
+        draft[tkey] = clamp(Math.floor(Number(input.value) || 0), 0, have);
+        renderGame();
+      });
+    });
+    function bindSendShortcut(button, all) {
+      button.addEventListener("click", function () {
+        var key = marchTargetKey();
+        if (!key) return;
+        var draft = ensureDraft(key);
+        Object.keys(TROOPS).forEach(function (k) {
+          draft[k] = all ? Math.max(0, Math.floor(Number(state.troops[k]) || 0)) : 0;
+        });
+        renderGame();
+      });
+    }
+    Array.prototype.forEach.call(app.querySelectorAll("[data-send-all]"), function (button) {
+      bindSendShortcut(button, true);
+    });
+    Array.prototype.forEach.call(app.querySelectorAll("[data-send-none]"), function (button) {
+      bindSendShortcut(button, false);
+    });
+
     var attackBtn = document.getElementById("pvp-attack-btn");
     if (attackBtn) attackBtn.addEventListener("click", function () { if (pvpTarget) pvpAttack(pvpTarget.id); });
     var cancelBtn = document.getElementById("pvp-cancel-btn");
@@ -4181,6 +4298,11 @@
       if (view === "admin" && isCloud() && (!world.at || now() - world.at > 5000)) {
         syncWorld().then(function () {
           if (view === "admin") renderGame();
+        });
+      }
+      if (view === "mapa" && isCloud()) {
+        syncWorld().then(function () {
+          if (view === "mapa") renderGame();
         });
       }
       renderGame();

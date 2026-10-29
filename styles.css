@@ -2121,9 +2121,64 @@ body.race-enanos .map {
   color: #e0b36a;
 }
 
+.pvp-card .pvp-actions {
+  order: 2;
+}
+
 .pvp-actions {
   display: flex;
   gap: 0.4rem;
+}
+
+.troop-picker {
+  order: 3;
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.9rem;
+  padding-top: 0.45rem;
+  border-top: 1px dashed #3c5d86;
+}
+
+.troop-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-sub);
+}
+
+.troop-row span {
+  min-width: 6.5rem;
+}
+
+.troop-row em {
+  font-style: normal;
+  opacity: 0.75;
+}
+
+.troop-row input {
+  width: 4.2rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid #3c5d86;
+  border-radius: 6px;
+  background: #16202e;
+  color: #dbe8f8;
+  font-size: 0.8rem;
+}
+
+.troop-total {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--text-sub);
+}
+
+.troop-total b {
+  color: #dbe8f8;
 }
 
 .pvp-actions .btn,

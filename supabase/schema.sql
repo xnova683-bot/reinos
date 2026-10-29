@@ -290,12 +290,16 @@ $seed$;
 do $npcseed$
 declare
   suffixes text[] := array['Vigía', 'Campamento', 'Ruinas'];
+  tx numeric[] := array[0.2265, 0.7276, 0.9320];
+  ty numeric[] := array[0.1404, 0.8651, 0.5270];
   region record;
   k integer;
   bx numeric;
   oy numeric;
   bw numeric;
   bh numeric;
+  sx numeric;
+  sy numeric;
 begin
   if (select count(*) from public.npcs) > 0 then
     return;
@@ -308,12 +312,22 @@ begin
     bh := (region.bbox->>'y1')::numeric - oy;
 
     for k in 0..2 loop
+      if region.id = 1 then
+        sx := tx[k + 1];
+        sy := ty[k + 1];
+      else
+        sx := bx + bw / 2 + (tx[k + 1] - 0.5006237573308003) * 0.8 * bw / 0.766161189992368;
+        sy := oy + bh / 2 + (ty[k + 1] - 0.46891129262306985) * 0.8 * bh / 0.786633294702648;
+        sx := least(bx + bw - 0.002, greatest(bx + 0.002, sx));
+        sy := least(oy + bh - 0.002, greatest(oy + 0.002, sy));
+      end if;
+
       insert into public.npcs (name, region_id, x, y, power)
       values (
         region.name || ' · ' || suffixes[k + 1],
         region.id,
-        least(0.99, greatest(0.01, bx + bw * (0.25 + k * 0.25))),
-        least(0.99, greatest(0.01, oy + bh * (0.3 + k * 0.2) + (case when k = 1 then bh * 0.12 else 0 end))),
+        sx,
+        sy,
         60 + k * 40
       );
     end loop;
@@ -335,8 +349,13 @@ begin
   end if;
 
   for region in select * from public.regions order by id loop
-    cx := ((region.bbox->>'x0')::numeric + (region.bbox->>'x1')::numeric) / 2;
-    cy := ((region.bbox->>'y0')::numeric + (region.bbox->>'y1')::numeric) / 2;
+    if region.id = 1 then
+      cx := 0.5006237573308003;
+      cy := 0.46891129262306985;
+    else
+      cx := ((region.bbox->>'x0')::numeric + (region.bbox->>'x1')::numeric) / 2;
+      cy := ((region.bbox->>'y0')::numeric + (region.bbox->>'y1')::numeric) / 2;
+    end if;
 
     insert into public.castles (region_id, name, x, y, power, loot)
     values (
@@ -523,14 +542,30 @@ declare
   bh numeric;
   cx numeric;
   cy numeric;
+  sw numeric;
+  sh numeric;
+  lx numeric;
+  hx numeric;
+  ly numeric;
+  hy numeric;
 begin
-  if new.region_id is null or new.x is null or new.y is null then
-    select r.* into reg
-    from public.regions r
-    where r.locked = false
-      and (select count(*) from public.profiles p where p.region_id = r.id) < r.capacity
-    order by r.id
-    limit 1;
+  if new.x is null or new.y is null then
+    if new.region_id is not null then
+      select r.* into reg
+      from public.regions r
+      where r.id = new.region_id
+        and r.locked = false
+        and (select count(*) from public.profiles p where p.region_id = r.id) < r.capacity;
+    end if;
+
+    if reg.id is null then
+      select r.* into reg
+      from public.regions r
+      where r.locked = false
+        and (select count(*) from public.profiles p where p.region_id = r.id) < r.capacity
+      order by r.id
+      limit 1;
+    end if;
 
     if reg.id is not null then
       select count(*) into n from public.profiles p where p.region_id = reg.id;
@@ -538,19 +573,37 @@ begin
       oy := (reg.bbox->>'y0')::numeric;
       bw := (reg.bbox->>'x1')::numeric - bx;
       bh := (reg.bbox->>'y1')::numeric - oy;
-      cx := bx + bw / 2;
-      cy := oy + bh / 2;
+      select c.x, c.y into cx, cy from public.castles c where c.region_id = reg.id limit 1;
+      if cx is null then
+        cx := bx + bw / 2;
+        cy := oy + bh / 2;
+      end if;
+      if reg.id = 1 then
+        sw := 1;
+        sh := 1;
+        lx := 0.01;
+        hx := 0.99;
+        ly := 0.01;
+        hy := 0.99;
+      else
+        sw := bw;
+        sh := bh;
+        lx := bx + 0.002;
+        hx := bx + bw - 0.002;
+        ly := oy + 0.002;
+        hy := oy + bh - 0.002;
+      end if;
       j := ('x' || substr(md5(new.id::text), 1, 12))::bit(48)::bigint;
       ang := n * 2.399963 + ((j % 100) / 100.0 - 0.5) * 0.24;
       rad := 0.12 + 0.34 * sqrt((n + 0.5) / greatest(reg.capacity, 25)::numeric);
       new.region_id := reg.id;
-      new.x := least(bx + bw - 0.002, greatest(bx + 0.002, cx + cos(ang) * bw * rad));
-      new.y := least(oy + bh - 0.002, greatest(oy + 0.002, cy + sin(ang) * bh * rad));
+      new.x := least(hx, greatest(lx, cx + cos(ang) * rad * sw));
+      new.y := least(hy, greatest(ly, cy + sin(ang) * rad * sh));
     end if;
   end if;
 
   if new.phone is null and new.email is not null then
-    new.phone := substring(new.email from '^([0-9]{6,15})@reinos\.local$');
+    new.phone := substring(new.email from '^([0-9]{6,15})@reinos\\.local$');
   end if;
 
   new.last_seen := now();

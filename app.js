@@ -1630,6 +1630,11 @@
           "Al llegar combatirá y los supervivientes regresarán por la misma ruta.",
       };
       return refreshOwnProfile().then(syncWorld).then(function () {
+        var active = activeExpedition();
+        if (active && String(active.from_region) !== String(active.to_region)) {
+          openRegionId = null;
+          mapFocusedRegion = null;
+        }
         renderGame();
       });
     }).catch(function () {
@@ -2108,9 +2113,8 @@
   }
 
   function roadNetwork(points, bends, extraLinks) {
-    if (!points || points.length < 3) return { svg: "", segments: [] };
-    var loops = roadLoops(points);
-    if (!loops.length) return { svg: "", segments: [] };
+    if (!points || !points.length) return { svg: "", segments: [] };
+    var loops = points.length >= 3 ? roadLoops(points) : [];
     var geometries = loops.map(function (loop) {
       return roadLoopGeometry(loop, bends);
     });
@@ -2324,8 +2328,14 @@
 
   function regionRoadLinks(region, points) {
     var portal = regionPortal(region);
-    var anchor = portal ? nearestRoadPoint(points, portal) : null;
-    if (!portal || !anchor) return [];
+    if (!portal || !points || !points.length) return [];
+    if (points.length < 3) {
+      return points.map(function (point, index) {
+        return { a: point, b: portal, seed: regionRoadSeed(region.id) + index };
+      });
+    }
+    var anchor = nearestRoadPoint(points, portal);
+    if (!anchor) return [];
     return [{ a: anchor, b: portal, seed: regionRoadSeed(region.id) }];
   }
 
@@ -2359,7 +2369,7 @@
     var region = regionById(regionId);
     if (!region || !startKey || !endKey || startKey === endKey) return null;
     var points = regionCityPoints(region, extras);
-    var net = roadNetwork(points, roadBendsForRegion(regionId));
+    var net = roadNetwork(points, roadBendsForRegion(regionId), regionRoadLinks(region, points));
     if (!net.segments.length) return null;
 
     var edges = {};
@@ -2485,32 +2495,45 @@
 
     if (fromRegion === toRegion) {
       var local = roadGraphPath(fromRegion, origin.key, target.key, [origin, target]);
-      if (!local || local.length < 2) return fallback;
-      if (cacheKey) expeditionRoadCache[cacheKey] = local;
-      return local;
+      if (local && local.length >= 2) {
+        if (cacheKey) expeditionRoadCache[cacheKey] = local;
+        return local;
+      }
+      var localCurve = [];
+      if (!appendRoadGeometry(localCurve, roadLinkGeometry(
+        origin, target, regionRoadSeed(fromRegion) + 3, roadBendsForRegion(fromRegion)
+      ), false)) return fallback;
+      if (cacheKey) expeditionRoadCache[cacheKey] = localCurve;
+      return localCurve;
     }
 
     var route = regionRouteIds(fromRegion, toRegion);
     var fromPortal = regionPortal(fromRegionObj);
     var toPortal = regionPortal(toRegionObj);
-    var fromAnchor = regionPortalAnchor(fromRegionObj, [origin]);
-    var toAnchor = regionPortalAnchor(toRegionObj, [target]);
-    if (!route.length || !fromPortal || !toPortal || !fromAnchor || !toAnchor) return fallback;
+    if (!route.length || !fromPortal || !toPortal) return fallback;
 
     var out = [];
-    var head = roadGraphPath(fromRegion, origin.key, fromAnchor.key, [origin]);
-    if (origin.key !== fromAnchor.key && (!head || head.length < 2)) return fallback;
-    appendPolyline(out, head || [origin]);
-    if (!appendRoadGeometry(out, regionSpurGeometry(fromRegionObj, fromAnchor), false)) return fallback;
+    var head = roadGraphPath(fromRegion, origin.key, fromPortal.key, [origin]);
+    if (head && head.length >= 2) {
+      appendPolyline(out, head);
+    } else if (!appendRoadGeometry(out, roadLinkGeometry(
+      origin, fromPortal, regionRoadSeed(fromRegion) + 5, roadBendsForRegion(fromRegion)
+    ), false)) {
+      return fallback;
+    }
     for (var i = 0; i < route.length - 1; i++) {
       var link = worldRoadPath(route[i], route[i + 1]);
       if (!link) return fallback;
       appendPolyline(out, link);
     }
-    if (!appendRoadGeometry(out, regionSpurGeometry(toRegionObj, toAnchor), true)) return fallback;
-    var tail = roadGraphPath(toRegion, toAnchor.key, target.key, [target]);
-    if (toAnchor.key !== target.key && (!tail || tail.length < 2)) return fallback;
-    appendPolyline(out, tail || [target]);
+    var tail = roadGraphPath(toRegion, toPortal.key, target.key, [target]);
+    if (tail && tail.length >= 2) {
+      appendPolyline(out, tail);
+    } else if (!appendRoadGeometry(out, roadLinkGeometry(
+      toPortal, target, regionRoadSeed(toRegion) + 7, roadBendsForRegion(toRegion)
+    ), false)) {
+      return fallback;
+    }
     if (out.length < 2) return fallback;
     if (cacheKey) expeditionRoadCache[cacheKey] = out;
     return out;

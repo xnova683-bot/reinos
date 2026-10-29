@@ -514,12 +514,15 @@ as $fn$
 declare
   reg public.regions%rowtype;
   n integer;
-  slot integer;
-  jitter integer;
+  j bigint;
+  ang numeric;
+  rad numeric;
   bx numeric;
   oy numeric;
   bw numeric;
   bh numeric;
+  cx numeric;
+  cy numeric;
 begin
   if new.region_id is null or new.x is null or new.y is null then
     select r.* into reg
@@ -531,24 +534,18 @@ begin
 
     if reg.id is not null then
       select count(*) into n from public.profiles p where p.region_id = reg.id;
-      slot := n % 25;
-
       bx := (reg.bbox->>'x0')::numeric;
       oy := (reg.bbox->>'y0')::numeric;
       bw := (reg.bbox->>'x1')::numeric - bx;
       bh := (reg.bbox->>'y1')::numeric - oy;
-      jitter := ('x' || substr(md5(new.id::text), 1, 8))::bit(32)::bigint % 1000;
-
+      cx := bx + bw / 2;
+      cy := oy + bh / 2;
+      j := ('x' || substr(md5(new.id::text), 1, 12))::bit(48)::bigint;
+      ang := n * 2.399963 + ((j % 100) / 100.0 - 0.5) * 0.24;
+      rad := 0.12 + 0.34 * sqrt((n + 0.5) / greatest(reg.capacity, 25)::numeric);
       new.region_id := reg.id;
-      select c.x, c.y into new.x, new.y from public.castles c where c.region_id = reg.id limit 1;
-      if new.x is null then
-        new.x := bx + bw * 0.5;
-        new.y := oy + bh * 0.5;
-      end if;
-      new.x := new.x + ((slot % 5) - 2) * bw * 0.055 + ((jitter % 3) - 1) * bw * 0.015;
-      new.y := new.y + (floor(slot / 5) - 2) * bh * 0.055 + (((jitter / 3) % 3) - 1) * bh * 0.015;
-      new.x := least(0.99, greatest(0.01, new.x));
-      new.y := least(0.99, greatest(0.01, new.y));
+      new.x := least(bx + bw - 0.002, greatest(bx + 0.002, cx + cos(ang) * bw * rad));
+      new.y := least(oy + bh - 0.002, greatest(oy + 0.002, cy + sin(ang) * bh * rad));
     end if;
   end if;
 

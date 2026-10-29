@@ -2018,8 +2018,8 @@
           used[best.i] = true;
           used[best.j] = true;
           links.push({
-            a: geometries[loopIndex].mids[best.i],
-            b: geometries[loopIndex].mids[best.j],
+            a: loop[best.i],
+            b: loop[best.j],
             seed: loopIndex * 31 + c * 7 + 1,
           });
         }
@@ -2059,8 +2059,8 @@
         if (rootA === rootB) return;
         parent[rootB] = rootA;
         links.push({
-          a: geometries[pair.from].mids[pair.a],
-          b: geometries[pair.to].mids[pair.b],
+          a: loops[pair.from][pair.a],
+          b: loops[pair.to][pair.b],
           seed: 100 + pair.from * 17 + pair.to * 13,
         });
       });

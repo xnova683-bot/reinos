@@ -12,6 +12,8 @@
   var SUPABASE_KEY = "sb_publishable_rLhRC2iT7Qv59B7n31hZfg_EbI-q8pd";
 
   var RESOURCES = ["oro", "madera", "comida", "piedra"];
+  var INVASION_FOOD = 60;
+  var INVASION_FATIGUE = 0.75;
   var RES_LABEL = { oro: "Oro", madera: "Madera", comida: "Comida", piedra: "Piedra" };
   var MARKET_ASSETS = {
     oro: "Oro", madera: "Madera", comida: "Comida", piedra: "Piedra",
@@ -1601,6 +1603,8 @@
         var message = cloudErrorMessage(result);
         if (message.indexOf("expedition active") !== -1) message = "Ya tienes un ejército en camino.";
         else if (message.indexOf("locked") !== -1) message = "Esa región está bloqueada por el administrador.";
+        else if (message.indexOf("region too far") !== -1) message = "Esa región no es vecina de la tuya: conquista una intermedia.";
+        else if (message.indexOf("not enough food") !== -1) message = "No tienes comida suficiente para invadir esa región.";
         else if (message.indexOf("shielded") !== -1) message = "Ese jugador sigue protegido por su escudo.";
         else if (message.indexOf("cooldown") !== -1) message = "Ese objetivo está en tiempo de espera.";
         else if (message.indexOf("not enough troops") !== -1) message = "No tienes suficientes tropas para ese destacamento.";
@@ -1621,6 +1625,7 @@
         text:
           "Destacamento en camino a " + (data.target || "el objetivo") +
           (troopSummary(data.troops) ? " · " + troopSummary(data.troops) : "") +
+          (Number(data.food_cost) > 0 ? " · -" + num(data.food_cost) + " comida" : "") +
           " · llegada en " + num(data.travel_seconds || 0) + " s. " +
           "Al llegar combatirá y los supervivientes regresarán por la misma ruta.",
       };
@@ -1711,6 +1716,41 @@
       x >= Number(b.x0) && x <= Number(b.x1) &&
       y >= Number(b.y0) && y <= Number(b.y1)
     );
+  }
+
+  function regionHops(fromId, toId) {
+    if (fromId == null || toId == null || fromId === "" || toId === "") return 0;
+    var from = Number(fromId);
+    var to = Number(toId);
+    if (!isFinite(from) || !isFinite(to)) return 0;
+    if (from === to) return 0;
+    if (from < 1 || from > 20 || to < 1 || to > 20) return 99;
+    return Math.abs(((from - 1) % 5) - ((to - 1) % 5)) +
+      Math.abs(Math.floor((from - 1) / 5) - Math.floor((to - 1) / 5));
+  }
+
+  function invasionInfo(regionId) {
+    var hops = session && session.region != null ? regionHops(session.region, regionId) : 0;
+    var valid = hops > 0 && hops < 99;
+    var cost = valid ? INVASION_FOOD * hops : 0;
+    var mult = valid ? Math.pow(INVASION_FATIGUE, hops) : 1;
+    var poor = cost > 0 && (!state || !state.res || Number(state.res.comida) < cost);
+    return { hops: hops, cost: cost, mult: mult, far: hops > 1, poor: poor };
+  }
+
+  function invasionLines(inv) {
+    var lines = "";
+    if (inv.hops === 1) {
+      lines += '<span class="npc-meta">Invasión: <b>' + num(inv.cost) + ' comida</b> · fatiga <b>-' +
+        Math.round((1 - inv.mult) * 100) + '% poder</b></span>';
+    }
+    if (inv.far) {
+      lines += '<span class="pvp-warn">Región no conectada: solo puedes atacar tu región o una vecina.</span>';
+    }
+    if (inv.poor) {
+      lines += '<span class="pvp-warn">Necesitas ' + num(inv.cost) + ' de comida para invadir.</span>';
+    }
+    return lines;
   }
 
   function regionAt(x, y) {
@@ -3172,7 +3212,8 @@
       var castleDefense = Number(castleTarget.defense) || Number(castleTarget.power) || 0;
       var castleLoot = Number(castleTarget.loot) || 0;
       var castleShare = Math.round(castleLoot / 4);
-      var castleOdds = Math.round(clamp((sendPower / Math.max(1, castleDefense)) * 100, 1, 99));
+      var castleInv = invasionInfo(castleTarget.region);
+      var castleOdds = Math.round(clamp((sendPower * castleInv.mult / Math.max(1, castleDefense)) * 100, 1, 99));
       var castleMine = !!castleTarget.owner && String(castleTarget.owner) === String(session && session.userId);
       castleCard =
         '<div class="pvp-card castle-card">' +
@@ -3185,6 +3226,7 @@
             "<span>Botín al conquistarlo: <b>" + num(castleLoot) + "</b> recursos (" +
               num(castleShare) + " de oro, madera, comida y piedra).</span>" +
             "<span>Éxito estimado: <b>" + num(castleOdds) + "%</b></span>" +
+            invasionLines(castleInv) +
             (castleMine ? '<span class="pvp-warn">Este castillo es tuyo: eres el rey.</span>' : "") +
             (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
             (armyCount(state) <= 0 && !castleMine ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
@@ -3192,7 +3234,7 @@
           "</div>" +
           picker +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="castle-attack-btn"' + (pvpBusy || castleMine || sendTotal <= 0 || myMarch ? " disabled" : "") + ">" +
+            '<button class="btn-primary" id="castle-attack-btn"' + (pvpBusy || castleMine || sendTotal <= 0 || myMarch || castleInv.far || castleInv.poor ? " disabled" : "") + ">" +
               (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="castle-cancel-btn">Cancelar</button>' +
@@ -3204,7 +3246,8 @@
       var npcTierValue = npcTier(npcTarget);
       var npcLootValue = npcLoot(npcTarget);
       var npcShare = Math.round(npcLootValue / 4);
-      var npcOdds = Math.round(clamp((sendPower / Math.max(1, Number(npcTarget.power))) * 100, 1, 99));
+      var npcInv = invasionInfo(npcTarget.region);
+      var npcOdds = Math.round(clamp((sendPower * npcInv.mult / Math.max(1, Number(npcTarget.power))) * 100, 1, 99));
       var npcRegion = regionById(npcTarget.region);
       npcCard =
         '<div class="pvp-card npc-card">' +
@@ -3215,13 +3258,14 @@
             "<span>Botín si la derrotas: <b>" + num(npcLootValue) + "</b> recursos (" +
               num(npcShare) + " de oro, madera, comida y piedra).</span>" +
             "<span>Éxito estimado: <b>" + num(npcOdds) + "%</b></span>" +
+            invasionLines(npcInv) +
             (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
             (armyCount(state) <= 0 ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
             (armyCount(state) > 0 && sendTotal <= 0 ? '<span class="pvp-warn">Selecciona al menos una tropa para enviar.</span>' : "") +
           "</div>" +
           picker +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="npc-attack-btn"' + (pvpBusy || sendTotal <= 0 || myMarch ? " disabled" : "") + ">" +
+            '<button class="btn-primary" id="npc-attack-btn"' + (pvpBusy || sendTotal <= 0 || myMarch || npcInv.far || npcInv.poor ? " disabled" : "") + ">" +
               (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="npc-cancel-btn">Cancelar</button>' +
@@ -3232,12 +3276,14 @@
     var targetCard = "";
     if (target) {
       var targetRegion = regionById(target.region);
+      var targetInv = invasionInfo(target.region);
       targetCard =
         '<div class="pvp-card">' +
           '<div class="pvp-info"><b>' + escapeHtml(target.name || "Rival") + "</b>" +
             "<span>" + (RACES[target.race] ? RACES[target.race].name : target.race) +
             " · Poder " + num(target.power) +
             (targetRegion ? " · " + escapeHtml(targetRegion.name) : "") + "</span>" +
+            invasionLines(targetInv) +
             (target.shield ? '<span class="pvp-warn">Escudo activo: no se puede atacar.</span>' : "") +
             (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
             (armyCount(state) <= 0 ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
@@ -3245,7 +3291,7 @@
           "</div>" +
           picker +
           '<div class="pvp-actions">' +
-            '<button class="btn-primary" id="pvp-attack-btn"' + (target.shield || pvpBusy || sendTotal <= 0 || myMarch ? " disabled" : "") + ">" +
+            '<button class="btn-primary" id="pvp-attack-btn"' + (target.shield || pvpBusy || sendTotal <= 0 || myMarch || targetInv.far || targetInv.poor ? " disabled" : "") + ">" +
               (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
             '<button class="btn" id="pvp-cancel-btn">Cancelar</button>' +

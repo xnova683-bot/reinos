@@ -384,6 +384,21 @@ as $fn$
     + coalesce((s->'buildings'->>'ayuntamiento')::numeric, 1) * 800;
 $fn$;
 
+create or replace function public.region_hops(p_from integer, p_to integer)
+returns integer
+language sql
+immutable
+as $fn$
+  select case
+    when p_from is null or p_to is null then 0
+    when p_from = p_to then 0
+    when p_from between 1 and 20 and p_to between 1 and 20 then
+      abs(((p_from - 1) % 5) - ((p_to - 1) % 5))
+      + abs(((p_from - 1) / 5) - ((p_to - 1) / 5))
+    else 99
+  end;
+$fn$;
+
 create or replace function public.region_route(p_from integer, p_to integer)
 returns integer[]
 language plpgsql
@@ -781,7 +796,9 @@ grant execute on function public.world_state() to authenticated;
 -- PvP (solo entre regiones desbloqueadas)
 -- ============================================================
 
-create or replace function public.resolve_rival_battle(p_attacker uuid, target_id uuid)
+drop function if exists public.resolve_rival_battle(uuid, uuid);
+
+create or replace function public.resolve_rival_battle(p_attacker uuid, target_id uuid, p_modifier numeric default 1)
 returns jsonb
 language plpgsql
 security definer
@@ -842,7 +859,7 @@ begin
     raise exception 'cooldown';
   end if;
 
-  a_power := public.state_power(a.state);
+  a_power := public.state_power(a.state) * greatest(0.25, coalesce(p_modifier, 1));
   d_power := public.state_power(d.state);
   if a_power <= 0 then raise exception 'no troops'; end if;
 
@@ -945,7 +962,7 @@ begin
 end;
 $fn$;
 
-revoke all on function public.resolve_rival_battle(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.resolve_rival_battle(uuid, uuid, numeric) from public, anon, authenticated;
 
 create or replace function public.attack_rival(target_id uuid)
 returns jsonb
@@ -964,7 +981,9 @@ grant execute on function public.attack_rival(uuid) to authenticated;
 -- Incursiones contra aldeas NPC
 -- ============================================================
 
-create or replace function public.resolve_npc_battle(p_attacker uuid, npc_id uuid)
+drop function if exists public.resolve_npc_battle(uuid, uuid);
+
+create or replace function public.resolve_npc_battle(p_attacker uuid, npc_id uuid, p_modifier numeric default 1)
 returns jsonb
 language plpgsql
 security definer
@@ -1016,7 +1035,7 @@ begin
     raise exception 'cooldown';
   end if;
 
-  a_power := public.state_power(a.state);
+  a_power := public.state_power(a.state) * greatest(0.25, coalesce(p_modifier, 1));
   if a_power <= 0 then raise exception 'no troops'; end if;
 
   a_eff := a_power * (0.9 + random() * 0.2);
@@ -1075,7 +1094,7 @@ begin
 end;
 $fn$;
 
-revoke all on function public.resolve_npc_battle(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.resolve_npc_battle(uuid, uuid, numeric) from public, anon, authenticated;
 
 create or replace function public.attack_npc(npc_id uuid)
 returns jsonb
@@ -1094,7 +1113,9 @@ grant execute on function public.attack_npc(uuid) to authenticated;
 -- Conquista del castillo del rey
 -- ============================================================
 
-create or replace function public.resolve_castle_battle(p_attacker uuid, castle_id uuid)
+drop function if exists public.resolve_castle_battle(uuid, uuid);
+
+create or replace function public.resolve_castle_battle(p_attacker uuid, castle_id uuid, p_modifier numeric default 1)
 returns jsonb
 language plpgsql
 security definer
@@ -1157,7 +1178,7 @@ begin
     raise exception 'cooldown';
   end if;
 
-  a_power := public.state_power(a.state);
+  a_power := public.state_power(a.state) * greatest(0.25, coalesce(p_modifier, 1));
   if a_power <= 0 then raise exception 'no troops'; end if;
 
   d_power := c.power;
@@ -1274,7 +1295,7 @@ begin
 end;
 $fn$;
 
-revoke all on function public.resolve_castle_battle(uuid, uuid) from public, anon, authenticated;
+revoke all on function public.resolve_castle_battle(uuid, uuid, numeric) from public, anon, authenticated;
 
 create or replace function public.attack_castle(castle_id uuid)
 returns jsonb
@@ -1326,9 +1347,15 @@ begin
 
     begin
       if e.target_type = 'player' then
-        res := public.resolve_rival_battle(e.attacker, e.target_id);
+        res := public.resolve_rival_battle(
+          e.attacker, e.target_id,
+          case when e.from_region is distinct from e.to_region then 0.75 else 1 end
+        );
       elsif e.target_type = 'npc' then
-        res := public.resolve_npc_battle(e.attacker, e.target_id);
+        res := public.resolve_npc_battle(
+          e.attacker, e.target_id,
+          case when e.from_region is distinct from e.to_region then 0.75 else 1 end
+        );
         if coalesce((res->>'win')::boolean, false) then
           insert into public.world_events (attacker, target, winner, loot, text)
           values (
@@ -1340,7 +1367,10 @@ begin
           );
         end if;
       else
-        res := public.resolve_castle_battle(e.attacker, e.target_id);
+        res := public.resolve_castle_battle(
+          e.attacker, e.target_id,
+          case when e.from_region is distinct from e.to_region then 0.75 else 1 end
+        );
       end if;
     exception when others then
       res := jsonb_build_object(
@@ -1440,6 +1470,8 @@ declare
   row_out public.expeditions%rowtype;
   sent jsonb := '{}'::jsonb;
   home jsonb;
+  hops integer := 0;
+  food_cost integer := 0;
   tkey text;
   want integer;
   have integer;
@@ -1511,6 +1543,15 @@ begin
       and r.id is distinct from a.region_id
   ) then raise exception 'region locked'; end if;
 
+  hops := public.region_hops(a.region_id, target_region);
+  if hops > 1 then raise exception 'region too far'; end if;
+  if hops = 1 then
+    food_cost := 60 * hops;
+    if coalesce((a.state->'res'->>'comida')::numeric, 0) < food_cost then
+      raise exception 'not enough food';
+    end if;
+  end if;
+
   if p_troops is null or jsonb_typeof(p_troops) <> 'object' then
     sent := coalesce(a.state->'troops', '{}'::jsonb);
   else
@@ -1531,7 +1572,13 @@ begin
   if total <= 0 then raise exception 'no troops'; end if;
 
   update public.profiles
-    set state = jsonb_set(state, '{troops}', home, true), updated_at = now()
+    set state = jsonb_set(
+        jsonb_set(state, '{troops}', home, true),
+        '{res,comida}',
+        to_jsonb(coalesce((a.state->'res'->>'comida')::numeric, 0) - food_cost),
+        true
+      ),
+      updated_at = now()
     where id = me;
 
   select coalesce(least(10, greatest(0.1, s.movement_speed)), 1)
@@ -1546,6 +1593,9 @@ begin
   );
   dist := public.expedition_distance(path);
   secs := greatest(10, least(240, round(dist / (45 * move_speed))::integer));
+  if hops > 0 then
+    secs := least(240, greatest(10, round(secs * (1 + 0.5 * hops))::integer));
+  end if;
 
   insert into public.expeditions (
     attacker, target_type, target_id, target_name,
@@ -1573,6 +1623,9 @@ begin
     'return_at', row_out.return_at,
     'move_speed', move_speed,
     'troops', sent,
+    'hops', hops,
+    'food_cost', food_cost,
+    'fatigue', case when hops > 0 then 0.75 else 1 end,
     'distance', round(dist, 3)
   );
 end;

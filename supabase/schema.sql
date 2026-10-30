@@ -59,6 +59,7 @@ alter table public.world_settings add column if not exists maintenance_message t
 alter table public.world_settings add column if not exists maintenance_version bigint not null default 0;
 alter table public.world_settings add column if not exists resource_speed numeric not null default 1;
 alter table public.world_settings add column if not exists movement_speed numeric not null default 1;
+alter table public.world_settings add column if not exists village_spacing_version integer not null default 0;
 
 insert into public.world_settings (id, map_image)
 values (1, null)
@@ -529,8 +530,8 @@ declare
   px numeric;
   py numeric;
   pos_ok boolean;
-  v_min constant numeric := 78;
-  poi_min constant numeric := 112;
+  v_min constant numeric := 75;
+  poi_min constant numeric := 105;
 begin
   if new.x is null or new.y is null then
     if new.region_id is not null then
@@ -2584,3 +2585,140 @@ begin
         email = 'admin@reinos.local';
 end;
 $admin$;
+
+
+do $spacing$
+declare
+  v record;
+  reg public.regions%rowtype;
+  rid integer;
+  bx numeric;
+  oy numeric;
+  bw numeric;
+  bh numeric;
+  lx numeric;
+  hx numeric;
+  ly numeric;
+  hy numeric;
+  j bigint;
+  jx bigint;
+  jy bigint;
+  attempt integer;
+  px numeric;
+  py numeric;
+  cand_x numeric;
+  cand_y numeric;
+  keep boolean;
+  v_min constant numeric := 75;
+  poi_min constant numeric := 105;
+begin
+  if (select w.village_spacing_version from public.world_settings w where w.id = 1) >= 1 then
+    return;
+  end if;
+
+  drop table if exists pg_temp._village_spacing;
+  create temp table _village_spacing (
+    id uuid primary key,
+    region_id integer,
+    x numeric,
+    y numeric
+  ) on commit drop;
+
+  for v in
+    select p.id, p.region_id, p.x, p.y
+    from public.profiles p
+    where p.x is not null and p.y is not null
+    order by p.region_id nulls last, p.id
+  loop
+    rid := v.region_id;
+    if rid is null then
+      rid := public.region_at(v.x, v.y);
+    end if;
+    if rid is null then
+      continue;
+    end if;
+
+    select r.* into reg from public.regions r where r.id = rid;
+    if not found then
+      continue;
+    end if;
+
+    keep := public.point_in_polygon(v.x, v.y, reg.points)
+      and not exists (
+        select 1 from _village_spacing s
+        where power((s.x - v.x) * 3182, 2) + power((s.y - v.y) * 2249, 2) < v_min * v_min
+      )
+      and not exists (
+        select 1 from public.castles c
+        where power((c.x - v.x) * 3182, 2) + power((c.y - v.y) * 2249, 2) < poi_min * poi_min
+      )
+      and not exists (
+        select 1 from public.npcs q
+        where power((q.x - v.x) * 3182, 2) + power((q.y - v.y) * 2249, 2) < poi_min * poi_min
+      );
+
+    if keep then
+      insert into _village_spacing (id, region_id, x, y)
+      values (v.id, rid, v.x, v.y);
+    else
+      bx := (reg.bbox->>'x0')::numeric;
+      oy := (reg.bbox->>'y0')::numeric;
+      bw := (reg.bbox->>'x1')::numeric - bx;
+      bh := (reg.bbox->>'y1')::numeric - oy;
+      lx := bx + 0.012 * bw;
+      hx := bx + bw - 0.012 * bw;
+      ly := oy + 0.012 * bh;
+      hy := oy + bh - 0.012 * bh;
+      j := ('x' || substr(md5(v.id::text), 1, 12))::bit(48)::bigint;
+      jx := j % 1000003;
+      jy := (j / 1000003) % 1000003;
+      cand_x := null;
+      cand_y := null;
+
+      for attempt in 0..2399 loop
+        px := lx + (((jx + attempt * 104729) % 1000003)::numeric / 1000003.0) * (hx - lx);
+        py := ly + (((jy + attempt * 130363) % 1000033)::numeric / 1000033.0) * (hy - ly);
+        if public.point_in_polygon(px, py, reg.points)
+          and not exists (
+            select 1 from _village_spacing s
+            where power((s.x - px) * 3182, 2) + power((s.y - py) * 2249, 2) < v_min * v_min
+          )
+          and not exists (
+            select 1 from public.castles c
+            where power((c.x - px) * 3182, 2) + power((c.y - py) * 2249, 2) < poi_min * poi_min
+          )
+          and not exists (
+            select 1 from public.npcs q
+            where power((q.x - px) * 3182, 2) + power((q.y - py) * 2249, 2) < poi_min * poi_min
+          )
+        then
+          cand_x := px;
+          cand_y := py;
+          exit;
+        end if;
+      end loop;
+
+      if cand_x is null then
+        cand_x := v.x;
+        cand_y := v.y;
+      end if;
+
+      insert into _village_spacing (id, region_id, x, y)
+      values (v.id, rid, cand_x, cand_y);
+    end if;
+  end loop;
+
+  alter table public.profiles disable trigger profiles_prepare;
+  update public.profiles p
+    set x = s.x,
+        y = s.y,
+        region_id = s.region_id
+    from _village_spacing s
+    where p.id = s.id;
+  alter table public.profiles enable trigger profiles_prepare;
+
+  update public.world_settings
+    set village_spacing_version = 1
+    where id = 1;
+end;
+$spacing$;

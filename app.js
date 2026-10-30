@@ -347,6 +347,7 @@
     },
     enanos: {
       arqueros: "./assets/troops/enanos-arqueros.webp?v=20261030i",
+      honderos: "./assets/troops/enanos-honderos.webp?v=20261030n",
       jinetes: "./assets/troops/enanos-jinetes.webp?v=20261030m",
     },
   };

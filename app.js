@@ -1946,16 +1946,7 @@
   }
 
   function skullIcon() {
-    return (
-      '<svg class="skull-svg" viewBox="0 0 32 32" aria-hidden="true" focusable="false">' +
-        '<path fill="currentColor" fill-rule="evenodd" d="' +
-          "M16 2.5C9.4 2.5 4 7.8 4 14.3c0 3.9 1.8 7.1 4.7 9.2v4.2c0 1.2 1 2.1 2.1 2.1h1.3v-2.6h2.1v2.6h2.4v-2.6h2.1v2.6h1.3c1.2 0 2.1-.9 2.1-2.1v-4.2c2.9-2.1 4.7-5.3 4.7-9.2C28 7.8 22.6 2.5 16 2.5Z " +
-          "M10.6 10.1a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4Z " +
-          "M21.4 10.1a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4Z " +
-          "M16 17.4l-2.2 3.6h4.4L16 17.4Z" +
-        '"/>' +
-      "</svg>"
-    );
+    return "💀";
   }
 
   function npcTierName(tier) {

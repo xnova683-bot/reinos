@@ -113,7 +113,7 @@
       name: "Cuartel",
       base: { oro: 150, madera: 120, comida: 80, piedra: 100 },
       desc: function (lvl) {
-        return "Permite entrenar tropas. Capacidad del ejército: " + troopCap(lvl) + " unidades.";
+        return "Desbloquea una tropa nueva por nivel. Capacidad del ejército: " + troopCap(lvl) + " unidades.";
       },
     },
     granero: {
@@ -128,6 +128,7 @@
   var TROOPS = {
     lanceros: {
       name: "Lanceros",
+      lvl: 2,
       cost: { oro: 40, madera: 20, comida: 10, piedra: 0 },
       atk: 6,
       def: 8,
@@ -137,6 +138,7 @@
     },
     arqueros: {
       name: "Arqueros",
+      lvl: 3,
       cost: { oro: 60, madera: 45, comida: 15, piedra: 10 },
       atk: 11,
       def: 4,
@@ -146,6 +148,7 @@
     },
     jinetes: {
       name: "Jinetes",
+      lvl: 4,
       cost: { oro: 110, madera: 30, comida: 70, piedra: 20 },
       atk: 18,
       def: 10,
@@ -155,6 +158,7 @@
     },
     espadachines: {
       name: "Espadachines",
+      lvl: 5,
       cost: { oro: 110, madera: 50, comida: 35, piedra: 25 },
       atk: 15,
       def: 15,
@@ -164,6 +168,7 @@
     },
     guardianes: {
       name: "Guardianes",
+      lvl: 11,
       cost: { oro: 160, madera: 80, comida: 50, piedra: 100 },
       atk: 10,
       def: 30,
@@ -173,6 +178,7 @@
     },
     jinetes_arqueros: {
       name: "Jinetes arqueros",
+      lvl: 9,
       cost: { oro: 150, madera: 70, comida: 80, piedra: 25 },
       atk: 21,
       def: 7,
@@ -182,6 +188,7 @@
     },
     catapultas: {
       name: "Catapultas",
+      lvl: 15,
       cost: { oro: 180, madera: 130, comida: 40, piedra: 100 },
       atk: 35,
       def: 3,
@@ -191,6 +198,7 @@
     },
     magos: {
       name: "Magos",
+      lvl: 12,
       cost: { oro: 240, madera: 40, comida: 60, piedra: 70 },
       atk: 28,
       def: 12,
@@ -200,6 +208,7 @@
     },
     asesinos: {
       name: "Asesinos",
+      lvl: 13,
       cost: { oro: 280, madera: 30, comida: 70, piedra: 40 },
       atk: 42,
       def: 5,
@@ -209,6 +218,7 @@
     },
     ballesteros: {
       name: "Ballesteros",
+      lvl: 7,
       cost: { oro: 120, madera: 100, comida: 50, piedra: 30 },
       atk: 24,
       def: 8,
@@ -218,6 +228,7 @@
     },
     piqueros: {
       name: "Piqueros",
+      lvl: 6,
       cost: { oro: 120, madera: 70, comida: 55, piedra: 70 },
       atk: 12,
       def: 22,
@@ -227,6 +238,7 @@
     },
     lobos_guerra: {
       name: "Lobos de guerra",
+      lvl: 8,
       cost: { oro: 150, madera: 40, comida: 100, piedra: 30 },
       atk: 26,
       def: 6,
@@ -236,6 +248,7 @@
     },
     elefantes: {
       name: "Elefantes",
+      lvl: 19,
       cost: { oro: 260, madera: 120, comida: 100, piedra: 180 },
       atk: 30,
       def: 24,
@@ -245,6 +258,7 @@
     },
     nigromantes: {
       name: "Nigromantes",
+      lvl: 18,
       cost: { oro: 260, madera: 50, comida: 90, piedra: 80 },
       atk: 34,
       def: 16,
@@ -254,6 +268,7 @@
     },
     dragones: {
       name: "Dragones",
+      lvl: 20,
       cost: { oro: 500, madera: 100, comida: 150, piedra: 200 },
       atk: 60,
       def: 20,
@@ -263,6 +278,7 @@
     },
     honderos: {
       name: "Honderos",
+      lvl: 1,
       cost: { oro: 50, madera: 40, comida: 10, piedra: 0 },
       atk: 9,
       def: 3,
@@ -272,6 +288,7 @@
     },
     arquebuseros: {
       name: "Arquebuseros",
+      lvl: 16,
       cost: { oro: 220, madera: 140, comida: 60, piedra: 50 },
       atk: 30,
       def: 10,
@@ -281,6 +298,7 @@
     },
     camellos: {
       name: "Camellos",
+      lvl: 10,
       cost: { oro: 160, madera: 50, comida: 90, piedra: 35 },
       atk: 22,
       def: 12,
@@ -290,6 +308,7 @@
     },
     osos_guerra: {
       name: "Osos de guerra",
+      lvl: 17,
       cost: { oro: 220, madera: 100, comida: 120, piedra: 60 },
       atk: 20,
       def: 24,
@@ -299,6 +318,7 @@
     },
     sacerdotes: {
       name: "Sacerdotes",
+      lvl: 14,
       cost: { oro: 200, madera: 70, comida: 80, piedra: 90 },
       atk: 18,
       def: 20,
@@ -308,6 +328,7 @@
     },
     titanes: {
       name: "Titanes",
+      lvl: 21,
       cost: { oro: 850, madera: 200, comida: 250, piedra: 350 },
       atk: 75,
       def: 30,
@@ -398,7 +419,8 @@
 
   function upgradeCost(key, level) {
     var base = BUILDINGS[key].base;
-    var factor = Math.pow(1.55, level - 1);
+    var growth = key === "ayuntamiento" || key === "cuartel" ? 1.32 : 1.55;
+    var factor = Math.pow(growth, level - 1);
     var cost = {};
     RESOURCES.forEach(function (res) {
       cost[res] = Math.round(base[res] * factor);
@@ -1215,6 +1237,12 @@
   function trainTroop(key, amount) {
     if (!state) return;
     var def = TROOPS[key];
+    if (!def) return;
+    if (state.buildings.cuartel < def.lvl) {
+      addLog("Necesitas Cuartel Nv. " + def.lvl + " para entrenar " + def.name + ".", "bad");
+      renderGame();
+      return;
+    }
     var cap = troopCap(state.buildings.cuartel);
     var current = armyCount(state) + queuedTroops();
     var space = Math.max(0, cap - current);
@@ -1427,6 +1455,7 @@
         var atk = def.atk * race.atk;
         var dfn = def.def * race.def;
         var hp = def.hp * race.hp;
+        var unlocked = state.buildings.cuartel >= def.lvl;
         var costHtml = RESOURCES.filter(function (res) {
           return (def.cost[res] || 0) > 0;
         })
@@ -1436,15 +1465,17 @@
           })
           .join("");
         return (
-          '<div class="troop">' +
+          '<div class="troop' + (unlocked ? "" : " locked") + '">' +
             '<div class="trow"><span class="tname">' + def.name + '</span><span class="tcount">x' + num(state.troops[key] || 0) + "</span></div>" +
-            '<div class="tstats"><span>Ataque ' + atk.toFixed(1) + "</span><span>Defensa " + dfn.toFixed(1) + "</span><span>Vida " + hp.toFixed(0) + "</span><span>" + def.time + "s /ud</span></div>" +
+            '<div class="tstats"><span>Nv. ' + def.lvl + '</span><span>Ataque ' + atk.toFixed(1) + "</span><span>Defensa " + dfn.toFixed(1) + "</span><span>Vida " + hp.toFixed(0) + "</span><span>" + def.time + "s /ud</span></div>" +
             '<div class="cost">' + costHtml + "</div>" +
-            '<div class="buy">' +
-              '<button class="btn" data-train="' + key + '" data-amount="1">+1</button>' +
-              '<button class="btn" data-train="' + key + '" data-amount="5">+5</button>' +
-              '<button class="btn" data-train="' + key + '" data-amount="25">+25</button>' +
-            "</div>" +
+            (unlocked
+              ? '<div class="buy">' +
+                  '<button class="btn" data-train="' + key + '" data-amount="1">+1</button>' +
+                  '<button class="btn" data-train="' + key + '" data-amount="5">+5</button>' +
+                  '<button class="btn" data-train="' + key + '" data-amount="25">+25</button>' +
+                "</div>"
+              : '<div class="buy"><span class="troop-lock">Requiere Cuartel Nv. ' + def.lvl + "</span></div>") +
           "</div>"
         );
       })

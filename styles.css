@@ -785,6 +785,19 @@ body.race-enanos .map {
   gap: 0.45rem;
 }
 
+.troop.locked {
+  opacity: 0.6;
+  border-style: dashed;
+}
+
+.troop-lock {
+  flex: 1;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #d8b46a;
+  padding: 0.3rem 0.5rem;
+}
+
 .troop .trow {
   display: flex;
   justify-content: space-between;

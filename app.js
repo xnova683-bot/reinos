@@ -356,6 +356,7 @@
       lanceros: "./assets/troops/enanos-lanceros.webp?v=20261030q",
       lobos_guerra: "./assets/troops/enanos-lobos-guerra.webp?v=20261030v",
       piqueros: "./assets/troops/enanos-piqueros.webp?v=20261030r",
+      sacerdotes: "./assets/troops/enanos-sacerdotes.webp?v=20261030w",
     },
   };
 

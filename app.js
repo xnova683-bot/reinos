@@ -339,6 +339,9 @@
   };
 
   var TROOP_ART = {
+    horda: {
+      arqueros: "./assets/troops/horda-arqueros.webp?v=20261030k",
+    },
     enanos: {
       arqueros: "./assets/troops/enanos-arqueros.webp?v=20261030i",
     },

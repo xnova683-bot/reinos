@@ -789,7 +789,6 @@ body.race-enanos .map {
   display: block;
   width: 100%;
   height: auto;
-  aspect-ratio: 1 / 1;
   object-fit: cover;
   border-bottom: 1px solid var(--border);
 }

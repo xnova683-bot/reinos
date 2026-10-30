@@ -28,6 +28,8 @@
     catapultas: true, magos: true, asesinos: true,
     ballesteros: true, piqueros: true, lobos_guerra: true,
     elefantes: true, nigromantes: true, dragones: true,
+    honderos: true, arquebuseros: true, camellos: true,
+    osos_guerra: true, sacerdotes: true, titanes: true,
   };
   var RES_ICON = { oro: "◈", madera: "❖", comida: "❁", piedra: "▲" };
 
@@ -259,6 +261,60 @@
       time: 30,
       desc: "La cima del poder militar. Devastadores y muy costosos.",
     },
+    honderos: {
+      name: "Honderos",
+      cost: { oro: 50, madera: 40, comida: 10, piedra: 0 },
+      atk: 9,
+      def: 3,
+      hp: 20,
+      time: 3,
+      desc: "Tropa inicial barata para llenar las primeras filas.",
+    },
+    arquebuseros: {
+      name: "Arquebuseros",
+      cost: { oro: 220, madera: 140, comida: 60, piedra: 50 },
+      atk: 30,
+      def: 10,
+      hp: 50,
+      time: 14,
+      desc: "Pólvora y plomo: gran daño a distancia, caros de equipar.",
+    },
+    camellos: {
+      name: "Camellos",
+      cost: { oro: 160, madera: 50, comida: 90, piedra: 35 },
+      atk: 22,
+      def: 12,
+      hp: 65,
+      time: 11,
+      desc: "Caballería del desierto: resistentes y con buen ataque.",
+    },
+    osos_guerra: {
+      name: "Osos de guerra",
+      cost: { oro: 220, madera: 100, comida: 120, piedra: 60 },
+      atk: 20,
+      def: 24,
+      hp: 100,
+      time: 16,
+      desc: "Bestias acorazadas que aguantan la primera línea.",
+    },
+    sacerdotes: {
+      name: "Sacerdotes",
+      cost: { oro: 200, madera: 70, comida: 80, piedra: 90 },
+      atk: 18,
+      def: 20,
+      hp: 75,
+      time: 15,
+      desc: "Élite equilibrada que sostiene el centro de la formación.",
+    },
+    titanes: {
+      name: "Titanes",
+      cost: { oro: 850, madera: 200, comida: 250, piedra: 350 },
+      atk: 75,
+      def: 30,
+      hp: 180,
+      time: 40,
+      desc: "Leyendas vivientes. Poder inmenso a un coste enorme.",
+    },
   };
 
   var QUEUE_LIMIT = 4;
@@ -440,6 +496,8 @@
         catapultas: 0, magos: 0, asesinos: 0,
         ballesteros: 0, piqueros: 0, lobos_guerra: 0,
         elefantes: 0, nigromantes: 0, dragones: 0,
+        honderos: 0, arquebuseros: 0, camellos: 0,
+        osos_guerra: 0, sacerdotes: 0, titanes: 0,
       },
       campsCleared: 0,
       buildQueue: [],

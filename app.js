@@ -3921,6 +3921,7 @@
       castleTarget = null;
       pvpResult = null;
       renderGame();
+      fitMap();
     });
 
     var castleAttackBtn = document.getElementById("castle-attack-btn");
@@ -4368,7 +4369,16 @@
   function bindGameEvents() {
     Array.prototype.forEach.call(app.querySelectorAll("[data-view]"), function (button) {
       button.addEventListener("click", function () {
+        var wasMap = view === "mapa";
         view = button.getAttribute("data-view");
+        if (!wasMap && view === "mapa" && isCloud() && session && !session.isAdmin && !adminMode) {
+          var home = session.region ||
+            (session.village && (regionAt(session.village.x, session.village.y) || {}).id) || null;
+          if (home && regionById(home)) {
+            openRegionId = home;
+            mapFocusedRegion = null;
+          }
+        }
       // mapa disponible
       if (view === "mercado" && isCloud()) {
         syncMarket().then(function () {

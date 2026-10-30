@@ -2778,15 +2778,6 @@
     return (world.settings && world.settings.map) || "./assets/map.jpg";
   }
 
-  function regionImageUrl(region) {
-    if (region) {
-      if (region.image_url) return region.image_url;
-      if (region.map_image) return region.map_image;
-      if (region.image) return region.image;
-    }
-    return "./assets/region-new.jpg";
-  }
-
   function saveRoadBend(regionId, key, t, x, y) {
     if (!isCloud() || !session.isAdmin) return Promise.resolve();
     pvpResult = null;
@@ -3103,19 +3094,27 @@
       return !regionLocked(regionId) || !!(session && session.isAdmin);
     };
 
-    var tiles = world.regions.map(function (region) {
-      var bb = region.bbox || {};
-      var x0 = Number(bb.x0), y0 = Number(bb.y0), x1 = Number(bb.x1), y1 = Number(bb.y1);
-      var style = "left:" + (x0 * 100).toFixed(3) + "%;top:" + (y0 * 100).toFixed(3) +
+    var zoneStyle = function (region, grow) {
+      var bb = region.bbox || { x0: 0, y0: 0, x1: 1, y1: 1 };
+      var g = typeof grow === "number" ? grow : 0;
+      var x0 = Math.max(0, Number(bb.x0) - g);
+      var y0 = Math.max(0, Number(bb.y0) - g);
+      var x1 = Math.min(1, Number(bb.x1) + g);
+      var y1 = Math.min(1, Number(bb.y1) + g);
+      return "left:" + (x0 * 100).toFixed(3) + "%;top:" + (y0 * 100).toFixed(3) +
         "%;width:" + ((x1 - x0) * 100).toFixed(3) + "%;height:" + ((y1 - y0) * 100).toFixed(3) + "%";
-      var img = '<img class="map-tile" src="' + escapeHtml(regionImageUrl(region)) +
-        '" alt="" draggable="false" style="' + style + '" onerror="this.style.visibility=\'hidden\'" />';
-      if (!region.locked) return img;
-      return img +
-        '<div class="zone-lock" style="' + style + '">' +
-          '<span class="zone-lock-icon">&#128274;</span>' +
-          '<span class="zone-lock-name">' + escapeHtml(region.name) + "</span>" +
-        "</div>";
+    };
+    var zoneOutlines = adminMode
+      ? world.regions.map(function (region) {
+          return '<div class="zone-outline" style="' + zoneStyle(region, 0.004) + '"></div>';
+        }).join("")
+      : "";
+    var zoneLocks = world.regions.map(function (region) {
+      if (!region.locked) return "";
+      return '<div class="zone-lock" style="' + zoneStyle(region, 0.004) + '">' +
+        '<span class="zone-lock-icon">&#128274;</span>' +
+        '<span class="zone-lock-name">' + escapeHtml(region.name) + "</span>" +
+      "</div>";
     }).join("");
 
     var roads = worldRoadNetwork();
@@ -3168,7 +3167,8 @@
       );
     }).join("");
 
-    var layer = tiles + roads +
+    var layer = '<img class="map-world-bg" src="./assets/world-terrain.jpg" alt="" draggable="false" />' +
+      zoneOutlines + zoneLocks + roads +
       expeditionOverlay(null) + zoneBadges + castles
       .map(function (castle) {
         return (
@@ -3225,7 +3225,6 @@
                   '<div class="admin-row">' +
                     "<span>" + escapeHtml(region.name) + " · " + num(region.villages) + "/" + num(region.capacity) + "</span>" +
                     '<span class="admin-row-actions">' +
-                      '<button class="btn small" data-region-image="' + region.id + '">Imagen</button>' +
                       '<button class="btn small" data-lock-region="' + region.id + '" data-lock="' + (region.locked ? "0" : "1") + '">' +
                         (region.locked ? "Desbloquear" : "Bloquear") +
                       "</button>" +
@@ -4006,16 +4005,6 @@
     if (adminBtn) adminBtn.addEventListener("click", function () {
       adminMode = !adminMode;
       renderGame();
-    });
-    Array.prototype.forEach.call(app.querySelectorAll("[data-region-image]"), function (button) {
-      button.addEventListener("click", function () {
-        var rid = Number(button.getAttribute("data-region-image"));
-        var region = regionById(rid);
-        var current = region && region.image_url ? region.image_url : "";
-        var url = window.prompt("URL de la imagen para esta zona (vacío = imagen por defecto)", current);
-        if (url === null) return;
-        adminAction("admin_set_region_image", { rid: rid, url: url });
-      });
     });
     var resetRoadsBtn = document.getElementById("reset-roads-btn");
     if (resetRoadsBtn) resetRoadsBtn.addEventListener("click", function () {

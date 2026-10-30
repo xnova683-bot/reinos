@@ -1752,7 +1752,7 @@ begin
     ) order by o.created_at desc)
     from public.market_orders o
     join public.profiles p on p.id = o.player
-    where o.remaining > 0
+    where o.remaining > 0 and o.side = 'sell'
   ), '[]'::jsonb);
 end;
 $fn$;
@@ -1773,7 +1773,7 @@ declare
   oid uuid;
 begin
   if me is null then raise exception 'not authenticated'; end if;
-  if p_side not in ('sell', 'buy') then raise exception 'invalid side'; end if;
+  if p_side is distinct from 'sell' then raise exception 'only sell offers allowed'; end if;
   if p_asset not in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes') then
     raise exception 'invalid asset';
   end if;
@@ -1787,15 +1787,8 @@ begin
   select * into a from public.profiles where id = me for update;
   if not found then raise exception 'profile missing'; end if;
 
-  if p_side = 'sell' then
-    new_state := public.market_take(a.state, p_asset, p_qty);
-    update public.profiles set state = new_state, updated_at = now() where id = me;
-  else
-    total := p_qty * p_price;
-    if a.kb < total then raise exception 'not enough kb'; end if;
-    perform set_config('reinos.kb_ok', '1', true);
-    update public.profiles set kb = kb - total, updated_at = now() where id = me;
-  end if;
+  new_state := public.market_take(a.state, p_asset, p_qty);
+  update public.profiles set state = new_state, updated_at = now() where id = me;
 
   insert into public.market_orders (player, side, asset, qty, remaining, price)
   values (me, p_side, p_asset, p_qty, p_qty, p_price)
@@ -1831,6 +1824,7 @@ begin
   select * into o from public.market_orders where id = p_order_id for update;
   if not found then raise exception 'order not found'; end if;
   if o.remaining <= 0 then raise exception 'closed'; end if;
+  if o.side <> 'sell' then raise exception 'only sell orders'; end if;
   if o.player = me then raise exception 'own order'; end if;
 
   fill := least(p_qty, o.remaining);

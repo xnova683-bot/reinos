@@ -1449,7 +1449,7 @@
           ok: true,
           text:
             fn === "market_post"
-              ? "Oferta publicada en el mercado."
+              ? "Venta publicada en el mercado."
               : fn === "market_fill"
                 ? "Operación completada: " + num(data.qty || 0) + " × " +
                   marketAssetName(data.asset) + " por " + num(data.total || 0) + " KB."
@@ -2936,13 +2936,15 @@
       .join("");
 
     var rows = market.orders
+      .filter(function (order) {
+        return order.side === "sell";
+      })
       .map(function (order) {
         var mine = !!order.mine;
         var total = Number(order.remaining) * Number(order.price);
         return (
           '<div class="market-order' + (mine ? " mine" : "") + '">' +
-            '<span class="mo-tag ' + (order.side === "sell" ? "sell" : "buy") + '">' +
-              (order.side === "sell" ? "Venta" : "Demanda") + "</span>" +
+            '<span class="mo-tag sell">Venta</span>' +
             '<div class="mo-main"><b>' + num(order.remaining) + " " +
               escapeHtml(marketAssetName(order.asset)) + "</b>" +
               (Number(order.qty) !== Number(order.remaining)
@@ -2955,10 +2957,8 @@
               (mine
                 ? '<button class="btn small" data-market-cancel="' + escapeHtml(String(order.id)) + '">Cancelar</button>'
                 : '<button class="btn small" data-market-fill="' + escapeHtml(String(order.id)) +
-                  '" data-market-side="' + escapeHtml(String(order.side)) +
                   '" data-market-left="' + escapeHtml(String(order.remaining)) + '"' +
-                  (marketBusy ? " disabled" : "") + ">" +
-                  (order.side === "sell" ? "Comprar" : "Vender") + "</button>") +
+                  (marketBusy ? " disabled" : "") + ">Comprar</button>") +
             "</div>" +
           "</div>"
         );
@@ -2972,27 +2972,22 @@
     return (
       '<div class="panel market-page">' +
         '<div class="panel-head"><h2>Mercado</h2>' +
-          '<span class="hint">Recursos y tropas por KB</span>' +
+          '<span class="hint">Solo ofertas de venta · recursos y tropas por KB</span>' +
         "</div>" +
         '<div class="panel-body">' +
           '<div class="market-top">Tu KB: <b>' + num((session && session.kb) || 0) +
             "</b> · Ofertas activas: <b>" + market.orders.length + "</b></div>" +
           msg +
           '<form id="market-form" class="market-form">' +
-            '<label>Operación<select id="market-side">' +
-              '<option value="sell">Vender (entrego el bien)</option>' +
-              '<option value="buy">Comprar (demanda, bloqueo KB)</option>' +
-            "</select></label>" +
             '<label>Bien<select id="market-asset">' + options + "</select></label>" +
             '<label>Cantidad<input id="market-qty" type="number" min="1" step="1" value="100" /></label>' +
             '<label>KB por unidad<input id="market-price" type="number" min="1" step="1" value="1" /></label>' +
             '<button class="btn-primary" type="submit"' + (marketBusy ? " disabled" : "") + ">" +
-              (marketBusy ? "Publicando…" : "Publicar oferta") +
+              (marketBusy ? "Publicando…" : "Publicar venta") +
             "</button>" +
           "</form>" +
-          '<div class="market-note">Al vender, el bien queda en custodia hasta que alguien lo compre. ' +
-            'En una demanda se bloquean tus KB y otro jugador te entrega el bien. Puedes cancelar cuando quieras ' +
-            "y recuperas lo que quede.</div>" +
+          '<div class="market-note">Solo puedes publicar ofertas de venta: el bien queda en custodia ' +
+            "hasta que alguien lo compre. Puedes cancelar cuando quieras y recuperas lo que quede.</div>" +
           '<div class="market-list">' +
             (market.error
               ? '<div class="market-msg bad">' + escapeHtml(market.error) + "</div>"
@@ -4321,7 +4316,6 @@
       form.addEventListener("submit", function (event) {
         if (event.preventDefault) event.preventDefault();
         if (marketBusy) return;
-        var sideEl = document.getElementById("market-side");
         var assetEl = document.getElementById("market-asset");
         var qtyEl = document.getElementById("market-qty");
         var priceEl = document.getElementById("market-price");
@@ -4333,7 +4327,7 @@
           return;
         }
         marketAction("market_post", {
-          p_side: (sideEl && sideEl.value) || "sell",
+          p_side: "sell",
           p_asset: (assetEl && assetEl.value) || "oro",
           p_qty: qty,
           p_price: price,

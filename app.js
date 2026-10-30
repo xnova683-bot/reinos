@@ -1945,15 +1945,15 @@
     return power < 80 ? "easy" : power < 120 ? "mid" : "hard";
   }
 
-  function caravelIcon() {
+  function skullIcon() {
     return (
-      '<svg class="caravel-svg" viewBox="0 0 32 32" aria-hidden="true" focusable="false">' +
-        '<path d="M4 20h24l-3 6H7l-3-6Z" fill="currentColor"/>' +
-        '<path d="M15 3h2v17h-2z" fill="currentColor"/>' +
-        '<path d="M8 17c3-4 5-8 6-12v12H8Z" fill="currentColor" opacity=".78"/>' +
-        '<path d="M18 16c2-3 4-6 6-8v8h-6Z" fill="currentColor" opacity=".78"/>' +
-        '<path d="M13 3h6l-3 3-3-3Z" fill="currentColor"/>' +
-        '<path d="m26 18 5-4 1 1-5 4Z" fill="currentColor"/>' +
+      '<svg class="skull-svg" viewBox="0 0 32 32" aria-hidden="true" focusable="false">' +
+        '<path fill="currentColor" fill-rule="evenodd" d="' +
+          "M16 2.5C9.4 2.5 4 7.8 4 14.3c0 3.9 1.8 7.1 4.7 9.2v4.2c0 1.2 1 2.1 2.1 2.1h1.3v-2.6h2.1v2.6h2.4v-2.6h2.1v2.6h1.3c1.2 0 2.1-.9 2.1-2.1v-4.2c2.9-2.1 4.7-5.3 4.7-9.2C28 7.8 22.6 2.5 16 2.5Z " +
+          "M10.6 10.1a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4Z " +
+          "M21.4 10.1a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4Z " +
+          "M16 17.4l-2.2 3.6h4.4L16 17.4Z" +
+        '"/>' +
       "</svg>"
     );
   }
@@ -3452,7 +3452,7 @@
             'title="' + escapeHtml(npc.name) + " · Poder " + num(npc.power) + (locked ? " · Zona bloqueada" : "") + '" ' +
             'style="left:' + (npc.x * 100).toFixed(2) + "%;top:" + (npc.y * 100).toFixed(2) + '%">' +
             '<span class="mlabel">' + escapeHtml(npc.name) + "</span>" +
-            '<span class="caravel">' + caravelIcon() + "</span>" +
+            '<span class="skull">' + skullIcon() + "</span>" +
           "</button>"
         );
       })
@@ -3687,7 +3687,7 @@
           '<span><i class="dot open"></i>Zona abierta</span>' +
           '<span><i class="dot locked"></i>Bloqueada</span>' +
           '<span><i class="dot player"></i>Aldea</span>' +
-          '<span><i class="dot npc">' + caravelIcon() + "</i>NPC</span>" +
+          '<span><i class="dot npc">' + skullIcon() + "</i>NPC</span>" +
           '<span><i class="dot castle"></i>Castillo</span>' +
           '<span><i class="dot mundo"></i>Mundo</span>' +
           '<span><i class="dot march"></i>Marcha</span>' +

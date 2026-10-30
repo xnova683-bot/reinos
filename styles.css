@@ -1769,7 +1769,7 @@ body.race-enanos .map {
   z-index: 2;
 }
 
-.marker.npc .caravel {
+.marker.npc .skull {
   display: block;
   width: 28px;
   height: 28px;
@@ -1777,21 +1777,21 @@ body.race-enanos .map {
   filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.72));
 }
 
-.marker.npc .caravel svg {
+.marker.npc .skull svg {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-.marker.npc.easy .caravel { color: #4caf72; }
-.marker.npc.mid .caravel { color: #d8bd52; }
-.marker.npc.hard .caravel { color: #c4544a; }
+.marker.npc.easy .skull { color: #4caf72; }
+.marker.npc.mid .skull { color: #d8bd52; }
+.marker.npc.hard .skull { color: #c4544a; }
 
 .marker.npc.locked {
   cursor: not-allowed;
 }
 
-.marker.npc.locked .caravel {
+.marker.npc.locked .skull {
   opacity: 0.5;
 }
 

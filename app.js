@@ -344,8 +344,12 @@
     },
   };
 
+  function troopArtSrc(raceId, key) {
+    return (TROOP_ART[raceId] && TROOP_ART[raceId][key]) || "";
+  }
+
   function troopArt(raceId, key, size) {
-    var src = TROOP_ART[raceId] && TROOP_ART[raceId][key];
+    var src = troopArtSrc(raceId, key);
     if (!src) return "";
     var px = size || 52;
     return '<img class="tportrait" src="' + src + '" alt="" width="' + px + '" height="' + px +
@@ -1470,6 +1474,7 @@
         var dfn = def.def * race.def;
         var hp = def.hp * race.hp;
         var unlocked = state.buildings.cuartel >= def.lvl;
+        var artSrc = troopArtSrc(state.race, key);
         var costHtml = RESOURCES.filter(function (res) {
           return (def.cost[res] || 0) > 0;
         })
@@ -1480,16 +1485,21 @@
           .join("");
         return (
           '<div class="troop' + (unlocked ? "" : " locked") + '">' +
-            '<div class="trow"><div class="tmain">' + troopArt(state.race, key) + '<span class="tname">' + def.name + '</span></div><span class="tcount">x' + num(state.troops[key] || 0) + "</span></div>" +
-            '<div class="tstats"><span>Nv. ' + def.lvl + '</span><span>Ataque ' + atk.toFixed(1) + "</span><span>Defensa " + dfn.toFixed(1) + "</span><span>Vida " + hp.toFixed(0) + "</span><span>" + def.time + "s /ud</span></div>" +
-            '<div class="cost">' + costHtml + "</div>" +
-            (unlocked
-              ? '<div class="buy">' +
-                  '<button class="btn" data-train="' + key + '" data-amount="1">+1</button>' +
-                  '<button class="btn" data-train="' + key + '" data-amount="5">+5</button>' +
-                  '<button class="btn" data-train="' + key + '" data-amount="25">+25</button>' +
-                "</div>"
-              : '<div class="buy"><span class="troop-lock">Requiere Cuartel Nv. ' + def.lvl + "</span></div>") +
+            (artSrc
+              ? '<img class="tart" src="' + artSrc + '" alt="" width="256" height="256" loading="lazy" decoding="async">'
+              : "") +
+            '<div class="tbody">' +
+              '<div class="trow"><span class="tname">' + def.name + '</span><span class="tcount">x' + num(state.troops[key] || 0) + "</span></div>" +
+              '<div class="tstats"><span>Nv. ' + def.lvl + '</span><span>Ataque ' + atk.toFixed(1) + "</span><span>Defensa " + dfn.toFixed(1) + "</span><span>Vida " + hp.toFixed(0) + "</span><span>" + def.time + "s /ud</span></div>" +
+              '<div class="cost">' + costHtml + "</div>" +
+              (unlocked
+                ? '<div class="buy">' +
+                    '<button class="btn" data-train="' + key + '" data-amount="1">+1</button>' +
+                    '<button class="btn" data-train="' + key + '" data-amount="5">+5</button>' +
+                    '<button class="btn" data-train="' + key + '" data-amount="25">+25</button>' +
+                  "</div>"
+                : '<div class="buy"><span class="troop-lock">Requiere Cuartel Nv. ' + def.lvl + "</span></div>") +
+            "</div>" +
           "</div>"
         );
       })

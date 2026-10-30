@@ -778,8 +778,24 @@ body.race-enanos .map {
 .troop {
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 0.6rem 0.7rem;
+  padding: 0;
+  overflow: hidden;
   background: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+}
+
+.troop .tart {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-bottom: 1px solid var(--border);
+}
+
+.troop .tbody {
+  padding: 0.6rem 0.7rem;
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
@@ -803,23 +819,6 @@ body.race-enanos .map {
   justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
-}
-
-.troop .tmain {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  min-width: 0;
-}
-
-.troop .tportrait {
-  width: 52px;
-  height: 52px;
-  flex: none;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.35);
 }
 
 .troop .tname {

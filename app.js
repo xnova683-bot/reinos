@@ -3429,7 +3429,7 @@
             'title="' + escapeHtml(castle.name) + (castle.owner ? " · Rey " + escapeHtml(castle.owner_name) : " · Sin rey") + '" ' +
             'style="left:' + (castle.x * 100).toFixed(2) + "%;top:" + (castle.y * 100).toFixed(2) + '%">' +
             '<span class="mlabel">' + escapeHtml(castle.name) + "</span>" +
-            '<span class="pin"></span>' +
+            '<span class="castle-emoji" aria-hidden="true">🏰</span>' +
           "</button>"
         );
       })
@@ -3679,7 +3679,7 @@
           '<span><i class="dot locked"></i>Bloqueada</span>' +
           '<span><i class="dot player"></i>Aldea</span>' +
           '<span><i class="dot npc">' + skullIcon() + "</i>NPC</span>" +
-          '<span><i class="dot castle"></i>Castillo</span>' +
+          '<span><i class="dot castle">🏰</i>Castillo</span>' +
           '<span><i class="dot mundo"></i>Mundo</span>' +
           '<span><i class="dot march"></i>Marcha</span>' +
           '<span class="grow"></span><span class="hint">Tu poder: ' + num(power) + "</span>" +

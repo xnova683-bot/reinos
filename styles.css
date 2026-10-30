@@ -1765,15 +1765,34 @@ body.race-enanos .map {
   color: var(--text-sub);
 }
 
-.marker.npc .pin {
-  width: 14px;
-  height: 14px;
-  margin: 2px auto 0;
-  border-radius: 50%;
-  background: #8a9a70;
-  border: 2px solid #181420;
-  box-shadow: 0 0 0 3px rgba(138, 154, 112, 0.25);
-  transform: none;
+.marker.npc {
+  z-index: 2;
+}
+
+.marker.npc .caravel {
+  display: block;
+  width: 28px;
+  height: 28px;
+  color: #8a9a70;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.72));
+}
+
+.marker.npc .caravel svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.marker.npc.easy .caravel { color: #4caf72; }
+.marker.npc.mid .caravel { color: #d8bd52; }
+.marker.npc.hard .caravel { color: #c4544a; }
+
+.marker.npc.locked {
+  cursor: not-allowed;
+}
+
+.marker.npc.locked .caravel {
+  opacity: 0.5;
 }
 
 .marker.npc .mlabel {
@@ -1789,7 +1808,17 @@ body.race-enanos .map {
 }
 
 .map-legend .dot.npc {
-  background: #8a9a70;
+  width: 15px;
+  height: 15px;
+  background: none;
+  color: #8a9a70;
+  vertical-align: -3px;
+}
+
+.map-legend .dot.npc svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .npc-card .npc-meta {

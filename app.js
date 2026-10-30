@@ -1945,6 +1945,19 @@
     return power < 80 ? "easy" : power < 120 ? "mid" : "hard";
   }
 
+  function caravelIcon() {
+    return (
+      '<svg class="caravel-svg" viewBox="0 0 32 32" aria-hidden="true" focusable="false">' +
+        '<path d="M4 20h24l-3 6H7l-3-6Z" fill="currentColor"/>' +
+        '<path d="M15 3h2v17h-2z" fill="currentColor"/>' +
+        '<path d="M8 17c3-4 5-8 6-12v12H8Z" fill="currentColor" opacity=".78"/>' +
+        '<path d="M18 16c2-3 4-6 6-8v8h-6Z" fill="currentColor" opacity=".78"/>' +
+        '<path d="M13 3h6l-3 3-3-3Z" fill="currentColor"/>' +
+        '<path d="m26 18 5-4 1 1-5 4Z" fill="currentColor"/>' +
+      "</svg>"
+    );
+  }
+
   function npcTierName(tier) {
     return tier === "easy" ? "Fácil" : tier === "mid" ? "Media" : "Difícil";
   }
@@ -3389,7 +3402,6 @@
       return typeof player.x === "number" && typeof player.y === "number";
     });
     var npcs = world.npcs.filter(function (npc) {
-      if (!visibleInZone(npc.region)) return false;
       return typeof npc.x === "number" && typeof npc.y === "number";
     });
     var castles = world.castles.filter(function (castle) {
@@ -3432,13 +3444,15 @@
       })
       .join("") + npcs
       .map(function (npc) {
+        var locked = regionLocked(npc.region) && !(session && session.isAdmin);
         return (
-          '<button class="marker npc ' + npcTier(npc) + '" data-map-npc="' + escapeHtml(npc.id) + '" ' +
+          '<button class="marker npc ' + npcTier(npc) + (locked ? " locked" : "") + '" data-map-npc="' + escapeHtml(npc.id) + '" ' +
+            'data-npc-locked="' + (locked ? "1" : "0") + '" aria-disabled="' + (locked ? "true" : "false") + '" ' +
             'data-mx="' + npc.x + '" data-my="' + npc.y + '" ' +
-            'title="' + escapeHtml(npc.name) + " · Poder " + num(npc.power) + '" ' +
+            'title="' + escapeHtml(npc.name) + " · Poder " + num(npc.power) + (locked ? " · Zona bloqueada" : "") + '" ' +
             'style="left:' + (npc.x * 100).toFixed(2) + "%;top:" + (npc.y * 100).toFixed(2) + '%">' +
             '<span class="mlabel">' + escapeHtml(npc.name) + "</span>" +
-            '<span class="pin"></span>' +
+            '<span class="caravel">' + caravelIcon() + "</span>" +
           "</button>"
         );
       })
@@ -3673,7 +3687,7 @@
           '<span><i class="dot open"></i>Zona abierta</span>' +
           '<span><i class="dot locked"></i>Bloqueada</span>' +
           '<span><i class="dot player"></i>Aldea</span>' +
-          '<span><i class="dot npc"></i>NPC</span>' +
+          '<span><i class="dot npc">' + caravelIcon() + "</i>NPC</span>" +
           '<span><i class="dot castle"></i>Castillo</span>' +
           '<span><i class="dot mundo"></i>Mundo</span>' +
           '<span><i class="dot march"></i>Marcha</span>' +
@@ -4077,6 +4091,11 @@
         world.npcs.forEach(function (npc) {
           if (String(npc.id) === String(id)) npcTarget = npc;
         });
+        var npcRegion = npcTarget ? regionById(npcTarget.region) : null;
+        if (npcRegion && npcRegion.locked && !(session && session.isAdmin)) {
+          npcTarget = null;
+          pvpResult = { ok: false, text: "Esa zona está bloqueada por el administrador." };
+        }
         renderGame();
       });
     });

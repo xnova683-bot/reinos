@@ -18,8 +18,15 @@
   var MARKET_ASSETS = {
     oro: "Oro", madera: "Madera", comida: "Comida", piedra: "Piedra",
     lanceros: "Lanceros", arqueros: "Arqueros", jinetes: "Jinetes",
+    espadachines: "Espadachines", guardianes: "Guardianes",
+    jinetes_arqueros: "Jinetes arqueros", catapultas: "Catapultas",
+    magos: "Magos", asesinos: "Asesinos",
   };
-  var MARKET_TROOPS = { lanceros: true, arqueros: true, jinetes: true };
+  var MARKET_TROOPS = {
+    lanceros: true, arqueros: true, jinetes: true,
+    espadachines: true, guardianes: true, jinetes_arqueros: true,
+    catapultas: true, magos: true, asesinos: true,
+  };
   var RES_ICON = { oro: "◈", madera: "❖", comida: "❁", piedra: "▲" };
 
   var RACES = {
@@ -141,6 +148,60 @@
       hp: 55,
       time: 9,
       desc: "Unidad de élite. Caros, pero devastadores en incursiones.",
+    },
+    espadachines: {
+      name: "Espadachines",
+      cost: { oro: 110, madera: 50, comida: 35, piedra: 25 },
+      atk: 15,
+      def: 15,
+      hp: 50,
+      time: 7,
+      desc: "Infantería pesada y equilibrada para el choque frontal.",
+    },
+    guardianes: {
+      name: "Guardianes",
+      cost: { oro: 160, madera: 80, comida: 50, piedra: 100 },
+      atk: 10,
+      def: 30,
+      hp: 95,
+      time: 12,
+      desc: "Muro defensivo. Aguantan mucho daño y protegen al ejército.",
+    },
+    jinetes_arqueros: {
+      name: "Jinetes arqueros",
+      cost: { oro: 150, madera: 70, comida: 80, piedra: 25 },
+      atk: 21,
+      def: 7,
+      hp: 44,
+      time: 10,
+      desc: "Hostigadores veloces: gran ataque a distancia y poca defensa.",
+    },
+    catapultas: {
+      name: "Catapultas",
+      cost: { oro: 180, madera: 130, comida: 40, piedra: 100 },
+      atk: 35,
+      def: 3,
+      hp: 45,
+      time: 16,
+      desc: "Asedio demoledor. Ataque altísimo, pero muy frágiles.",
+    },
+    magos: {
+      name: "Magos",
+      cost: { oro: 240, madera: 40, comida: 60, piedra: 70 },
+      atk: 28,
+      def: 12,
+      hp: 65,
+      time: 18,
+      desc: "Élite arcana: mucho daño y buena resistencia.",
+    },
+    asesinos: {
+      name: "Asesinos",
+      cost: { oro: 280, madera: 30, comida: 70, piedra: 40 },
+      atk: 42,
+      def: 5,
+      hp: 38,
+      time: 20,
+      desc: "Golpe letal. El mayor ataque del juego a cambio de fragilidad.",
     },
   };
 
@@ -317,7 +378,11 @@
         cuartel: 1,
         granero: 1,
       },
-      troops: { lanceros: 6, arqueros: 2, jinetes: 0 },
+      troops: {
+        lanceros: 6, arqueros: 2, jinetes: 0,
+        espadachines: 0, guardianes: 0, jinetes_arqueros: 0,
+        catapultas: 0, magos: 0, asesinos: 0,
+      },
       campsCleared: 0,
       buildQueue: [],
       trainQueue: [],

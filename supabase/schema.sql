@@ -512,22 +512,25 @@ set search_path = public
 as $fn$
 declare
   reg public.regions%rowtype;
-  n integer;
   j bigint;
-  ang numeric;
-  rad numeric;
+  jx bigint;
+  jy bigint;
   bx numeric;
   oy numeric;
   bw numeric;
   bh numeric;
-  cx numeric;
-  cy numeric;
-  sw numeric;
-  sh numeric;
   lx numeric;
   hx numeric;
   ly numeric;
   hy numeric;
+  attempt integer;
+  cand_x numeric;
+  cand_y numeric;
+  px numeric;
+  py numeric;
+  pos_ok boolean;
+  v_min constant numeric := 78;
+  poi_min constant numeric := 112;
 begin
   if new.x is null or new.y is null then
     if new.region_id is not null then
@@ -548,28 +551,51 @@ begin
     end if;
 
     if reg.id is not null then
-      select count(*) into n from public.profiles p where p.region_id = reg.id;
       bx := (reg.bbox->>'x0')::numeric;
       oy := (reg.bbox->>'y0')::numeric;
       bw := (reg.bbox->>'x1')::numeric - bx;
       bh := (reg.bbox->>'y1')::numeric - oy;
-      select c.x, c.y into cx, cy from public.castles c where c.region_id = reg.id limit 1;
-      if cx is null then
-        cx := bx + bw / 2;
-        cy := oy + bh / 2;
-      end if;
-      sw := bw;
-      sh := bh;
-      lx := bx + 0.002;
-      hx := bx + bw - 0.002;
-      ly := oy + 0.002;
-      hy := oy + bh - 0.002;
+      lx := bx + 0.012 * bw;
+      hx := bx + bw - 0.012 * bw;
+      ly := oy + 0.012 * bh;
+      hy := oy + bh - 0.012 * bh;
       j := ('x' || substr(md5(new.id::text), 1, 12))::bit(48)::bigint;
-      ang := n * 2.399963 + ((j % 100) / 100.0 - 0.5) * 0.24;
-      rad := 0.12 + 0.34 * sqrt((n + 0.5) / greatest(reg.capacity, 25)::numeric);
+      jx := j % 1000003;
+      jy := (j / 1000003) % 1000003;
       new.region_id := reg.id;
-      new.x := least(hx, greatest(lx, cx + cos(ang) * rad * sw));
-      new.y := least(hy, greatest(ly, cy + sin(ang) * rad * sh));
+      for attempt in 0..2399 loop
+        px := lx + (((jx + attempt * 104729) % 1000003)::numeric / 1000003.0) * (hx - lx);
+        py := ly + (((jy + attempt * 130363) % 1000033)::numeric / 1000033.0) * (hy - ly);
+        pos_ok := public.point_in_polygon(px, py, reg.points);
+        if pos_ok then
+          pos_ok := not exists (
+            select 1 from public.profiles p
+            where p.id <> new.id
+              and p.x is not null
+              and p.y is not null
+              and power((p.x - px) * 3182, 2) + power((p.y - py) * 2249, 2) < v_min * v_min
+          );
+        end if;
+        if pos_ok then
+          pos_ok := not exists (
+            select 1 from public.castles c
+            where power((c.x - px) * 3182, 2) + power((c.y - py) * 2249, 2) < poi_min * poi_min
+          );
+        end if;
+        if pos_ok then
+          pos_ok := not exists (
+            select 1 from public.npcs q
+            where power((q.x - px) * 3182, 2) + power((q.y - py) * 2249, 2) < poi_min * poi_min
+          );
+        end if;
+        if pos_ok then
+          cand_x := px;
+          cand_y := py;
+          exit;
+        end if;
+      end loop;
+      new.x := cand_x;
+      new.y := cand_y;
     end if;
   end if;
 

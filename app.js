@@ -3689,6 +3689,59 @@
     );
   }
 
+  var mapLabelsFrame = 0;
+  var lastLabelScale = 0;
+  function scheduleMapLabels() {
+    if (mapLabelsFrame) return;
+    var run = function () {
+      mapLabelsFrame = 0;
+      var stage = document.getElementById("worldmap-stage");
+      if (!stage || typeof stage.querySelectorAll !== "function") return;
+      var labels = Array.prototype.slice.call(stage.querySelectorAll(".marker .mlabel"));
+      if (!labels.length) return;
+      labels.forEach(function (label) {
+        if (label.classList) label.classList.remove("label-hidden");
+        if (label.removeAttribute) label.removeAttribute("aria-hidden");
+      });
+      if (typeof labels[0].getBoundingClientRect !== "function") return;
+      var items = [];
+      labels.forEach(function (label, index) {
+        var rect = label.getBoundingClientRect();
+        if (!rect || rect.width < 1 || rect.height < 1) return;
+        var marker = label.parentNode;
+        var priority = 4;
+        if (marker && marker.classList) {
+          if (marker.classList.contains("me")) priority = 0;
+          else if (marker.classList.contains("player")) priority = 1;
+          else if (marker.classList.contains("castle")) priority = 2;
+          else if (marker.classList.contains("npc")) priority = 3;
+        }
+        items.push({ label: label, rect: rect, priority: priority, order: index });
+      });
+      items.sort(function (a, b) {
+        return a.priority - b.priority || a.rect.top - b.rect.top ||
+          a.rect.left - b.rect.left || a.order - b.order;
+      });
+      var placed = [];
+      var pad = 3;
+      items.forEach(function (item) {
+        var r = item.rect;
+        var overlap = placed.some(function (p) {
+          return r.left < p.right + pad && r.right > p.left - pad &&
+            r.top < p.bottom + pad && r.bottom > p.top - pad;
+        });
+        if (overlap) {
+          if (item.label.classList) item.label.classList.add("label-hidden");
+          if (item.label.setAttribute) item.label.setAttribute("aria-hidden", "true");
+        } else {
+          placed.push(r);
+        }
+      });
+    };
+    if (typeof requestAnimationFrame === "function") mapLabelsFrame = requestAnimationFrame(run);
+    else mapLabelsFrame = setTimeout(run, 0);
+  }
+
   function focusRegion(region) {
     if (!mapWrapEl || !region) return;
     var w = mapWrapEl.clientWidth || 900;
@@ -3754,6 +3807,10 @@
     mapStageEl.style.transform =
       "translate(" + mapTransform.x + "px," + mapTransform.y + "px) scale(" + mapTransform.scale + ")";
     mapStageEl.style.setProperty("--inv", String(1 / mapTransform.scale));
+    if (lastLabelScale !== mapTransform.scale) {
+      lastLabelScale = mapTransform.scale;
+      scheduleMapLabels();
+    }
     cullMarkers();
   }
 
@@ -3846,6 +3903,7 @@
       fitMap();
       mapFocusedRegion = null;
     }
+    scheduleMapLabels();
 
     function pointerList() {
       return Object.keys(pointers).map(function (id) {

@@ -2104,6 +2104,10 @@ body.race-enanos .map {
   transform: none;
 }
 
+.marker .mlabel.label-hidden {
+  visibility: hidden;
+}
+
 .marker .mlabel {
   font-size: 0.66rem;
   letter-spacing: 0.04em;

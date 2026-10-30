@@ -3167,7 +3167,7 @@
       );
     }).join("");
 
-    var layer = '<img class="map-world-bg" src="./assets/world-terrain.jpg" alt="" draggable="false" />' +
+    var layer = '<img class="map-world-bg" src="./assets/world-terrain.jpg?v=20261030b" alt="" draggable="false" />' +
       zoneOutlines + zoneLocks + roads +
       expeditionOverlay(null) + zoneBadges + castles
       .map(function (castle) {

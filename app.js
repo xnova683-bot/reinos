@@ -354,6 +354,7 @@
       jinetes: "./assets/troops/enanos-jinetes.webp?v=20261030m",
       jinetes_arqueros: "./assets/troops/enanos-jinetes-arqueros.webp?v=20261030t",
       lanceros: "./assets/troops/enanos-lanceros.webp?v=20261030q",
+      lobos_guerra: "./assets/troops/enanos-lobos-guerra.webp?v=20261030v",
       piqueros: "./assets/troops/enanos-piqueros.webp?v=20261030r",
     },
   };

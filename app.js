@@ -348,6 +348,7 @@
     enanos: {
       arqueros: "./assets/troops/enanos-arqueros.webp?v=20261030o",
       arquebuseros: "./assets/troops/enanos-arquebuseros.webp?v=20261030s",
+      elefantes: "./assets/troops/enanos-elefantes.webp?v=20261030x",
       ballesteros: "./assets/troops/enanos-ballesteros.webp?v=20261030p",
       espadachines: "./assets/troops/enanos-espadachines.webp?v=20261030u",
       honderos: "./assets/troops/enanos-honderos.webp?v=20261030n",

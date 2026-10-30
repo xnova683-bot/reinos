@@ -2153,17 +2153,14 @@ body.race-enanos .map {
 
 /* ---------------- jugadores en el mapa ---------------- */
 
-.marker.player .pin {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  transform: none;
-  border: 2px solid #0b0a10;
+.marker.player .village-emoji,
+.marker.me .village-emoji {
+  display: block;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 1.35rem;
+  line-height: 1;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.72));
 }
-
-.marker.player.horda .pin { background: #c4544a; }
-.marker.player.alianza .pin { background: #4a7ec4; }
-.marker.player.enanos .pin { background: #c4a24a; }
 
 .marker.player .mlabel {
   font-size: 0.62rem;
@@ -2176,18 +2173,15 @@ body.race-enanos .map {
   opacity: 0.55;
 }
 
-.marker.player.shielded .pin {
-  box-shadow: 0 0 0 3px rgba(122, 167, 224, 0.35);
+.marker.player.shielded .village-emoji {
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.72))
+    drop-shadow(0 0 4px rgba(122, 167, 224, 0.9));
 }
 
-.marker.me .pin {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  transform: none;
-  background: #7aa7e0;
-  border: 2px solid #0b0a10;
-  box-shadow: 0 0 0 4px rgba(122, 167, 224, 0.25);
+.marker.me .village-emoji {
+  font-size: 1.5rem;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.72))
+    drop-shadow(0 0 5px rgba(122, 167, 224, 0.85));
 }
 
 .marker.me .mlabel {
@@ -2366,16 +2360,24 @@ body.race-enanos .map {
 }
 
 .map-legend .dot.player {
-  background: #7aa7e0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  background: none;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 14px;
+  line-height: 1;
+  vertical-align: -3px;
 }
 
 .worldmap-stage:not(.labels) .marker.player .mlabel {
   display: none;
 }
 
-.worldmap-stage:not(.labels) .marker.player .pin {
-  width: 10px;
-  height: 10px;
+.worldmap-stage:not(.labels) .marker.player .village-emoji {
+  font-size: 1.15rem;
 }
 
 /* ---------------- regiones / reinos ---------------- */

@@ -3336,7 +3336,7 @@
       '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
         'title="Tu aldea" ' +
         'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
-        '<span class="mlabel">' + escapeHtml(myName) + '</span><span class="pin"></span>' +
+        '<span class="mlabel">' + escapeHtml(myName) + '</span><span class="village-emoji" aria-hidden="true">🏘️</span>' +
       "</div>";
 
     var regionLocked = function (regionId) {
@@ -3456,7 +3456,7 @@
             'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) + '" ' +
             'style="left:' + (player.x * 100).toFixed(2) + "%;top:" + (player.y * 100).toFixed(2) + '%">' +
             '<span class="mlabel">' + (player.shield ? "&#9930; " : "") + escapeHtml(player.name) + "</span>" +
-            '<span class="pin"></span>' +
+            '<span class="village-emoji" aria-hidden="true">🏘️</span>' +
           "</button>"
         );
       })
@@ -3677,7 +3677,7 @@
         '<div class="map-legend">' +
           '<span><i class="dot open"></i>Zona abierta</span>' +
           '<span><i class="dot locked"></i>Bloqueada</span>' +
-          '<span><i class="dot player"></i>Aldea</span>' +
+          '<span><i class="dot player">🏘️</i>Aldea</span>' +
           '<span><i class="dot npc">' + skullIcon() + "</i>NPC</span>" +
           '<span><i class="dot castle">🏰</i>Castillo</span>' +
           '<span><i class="dot mundo"></i>Mundo</span>' +

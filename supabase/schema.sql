@@ -365,12 +365,12 @@ as $fn$
   )
   select round(coalesce(sum(
     coalesce((s->'troops'->>t)::numeric, 0) * (
-      (case t when 'lanceros' then 6 when 'arqueros' then 11 when 'jinetes' then 18 when 'espadachines' then 15 when 'guardianes' then 10 when 'jinetes_arqueros' then 21 when 'catapultas' then 35 when 'magos' then 28 when 'asesinos' then 42 else 0 end) * m.atk
-      + (case t when 'lanceros' then 8 when 'arqueros' then 4 when 'jinetes' then 10 when 'espadachines' then 15 when 'guardianes' then 30 when 'jinetes_arqueros' then 7 when 'catapultas' then 3 when 'magos' then 12 when 'asesinos' then 5 else 0 end) * m.def
-      + (case t when 'lanceros' then 30 when 'arqueros' then 22 when 'jinetes' then 55 when 'espadachines' then 50 when 'guardianes' then 95 when 'jinetes_arqueros' then 44 when 'catapultas' then 45 when 'magos' then 65 when 'asesinos' then 38 else 0 end) * m.hp / 4
+      (case t when 'lanceros' then 6 when 'arqueros' then 11 when 'jinetes' then 18 when 'espadachines' then 15 when 'guardianes' then 10 when 'jinetes_arqueros' then 21 when 'catapultas' then 35 when 'magos' then 28 when 'asesinos' then 42 when 'ballesteros' then 24 when 'piqueros' then 12 when 'lobos_guerra' then 26 when 'elefantes' then 30 when 'nigromantes' then 34 when 'dragones' then 60 else 0 end) * m.atk
+      + (case t when 'lanceros' then 8 when 'arqueros' then 4 when 'jinetes' then 10 when 'espadachines' then 15 when 'guardianes' then 30 when 'jinetes_arqueros' then 7 when 'catapultas' then 3 when 'magos' then 12 when 'asesinos' then 5 when 'ballesteros' then 8 when 'piqueros' then 22 when 'lobos_guerra' then 6 when 'elefantes' then 24 when 'nigromantes' then 16 when 'dragones' then 20 else 0 end) * m.def
+      + (case t when 'lanceros' then 30 when 'arqueros' then 22 when 'jinetes' then 55 when 'espadachines' then 50 when 'guardianes' then 95 when 'jinetes_arqueros' then 44 when 'catapultas' then 45 when 'magos' then 65 when 'asesinos' then 38 when 'ballesteros' then 40 when 'piqueros' then 60 when 'lobos_guerra' then 50 when 'elefantes' then 140 when 'nigromantes' then 80 when 'dragones' then 120 else 0 end) * m.hp / 4
     )
   ), 0))::integer
-  from (values ('lanceros'), ('arqueros'), ('jinetes'), ('espadachines'), ('guardianes'), ('jinetes_arqueros'), ('catapultas'), ('magos'), ('asesinos')) as x(t), m;
+  from (values ('lanceros'), ('arqueros'), ('jinetes'), ('espadachines'), ('guardianes'), ('jinetes_arqueros'), ('catapultas'), ('magos'), ('asesinos'), ('ballesteros'), ('piqueros'), ('lobos_guerra'), ('elefantes'), ('nigromantes'), ('dragones')) as x(t), m;
 $fn$;
 
 create or replace function public.state_storage(s jsonb)
@@ -902,7 +902,7 @@ begin
   d_state := jsonb_set(coalesce(d.state, '{}'::jsonb), '{troops}', coalesce(d.state->'troops', '{}'::jsonb), true);
   d_state := jsonb_set(d_state, '{res}', coalesce(d.state->'res', '{}'::jsonb), true);
 
-  foreach t in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos'] loop
+  foreach t in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones'] loop
     cnt := coalesce((a_state->'troops'->>t)::integer, 0);
     dead := least(cnt, round(cnt * a_loss_frac)::integer);
     a_state := jsonb_set(a_state, array['troops', t], to_jsonb(cnt - dead), true);
@@ -1073,7 +1073,7 @@ begin
   a_state := jsonb_set(coalesce(a.state, '{}'::jsonb), '{troops}', coalesce(a.state->'troops', '{}'::jsonb), true);
   a_state := jsonb_set(a_state, '{res}', coalesce(a.state->'res', '{}'::jsonb), true);
 
-  foreach t in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos'] loop
+  foreach t in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones'] loop
     cnt := coalesce((a_state->'troops'->>t)::integer, 0);
     dead := least(cnt, round(cnt * loss_frac)::integer);
     a_state := jsonb_set(a_state, array['troops', t], to_jsonb(cnt - dead), true);
@@ -1228,7 +1228,7 @@ begin
   a_state := jsonb_set(coalesce(a.state, '{}'::jsonb), '{troops}', coalesce(a.state->'troops', '{}'::jsonb), true);
   a_state := jsonb_set(a_state, '{res}', coalesce(a.state->'res', '{}'::jsonb), true);
 
-  foreach t in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos'] loop
+  foreach t in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones'] loop
     cnt := coalesce((a_state->'troops'->>t)::integer, 0);
     dead := least(cnt, round(cnt * a_loss_frac)::integer);
     a_state := jsonb_set(a_state, array['troops', t], to_jsonb(cnt - dead), true);
@@ -1237,7 +1237,7 @@ begin
 
   if has_owner and o.id is not null then
     d_state := jsonb_set(coalesce(o.state, '{}'::jsonb), '{troops}', coalesce(o.state->'troops', '{}'::jsonb), true);
-    foreach t in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos'] loop
+    foreach t in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones'] loop
       cnt := coalesce((d_state->'troops'->>t)::integer, 0);
       dead := least(cnt, round(cnt * d_loss_frac)::integer);
       d_state := jsonb_set(d_state, array['troops', t], to_jsonb(cnt - dead), true);
@@ -1422,11 +1422,17 @@ begin
       + coalesce((surv->>'jinetes_arqueros')::bigint, 0)
       + coalesce((surv->>'catapultas')::bigint, 0)
       + coalesce((surv->>'magos')::bigint, 0)
-      + coalesce((surv->>'asesinos')::bigint, 0);
+      + coalesce((surv->>'asesinos')::bigint, 0)
+      + coalesce((surv->>'ballesteros')::bigint, 0)
+      + coalesce((surv->>'piqueros')::bigint, 0)
+      + coalesce((surv->>'lobos_guerra')::bigint, 0)
+      + coalesce((surv->>'elefantes')::bigint, 0)
+      + coalesce((surv->>'nigromantes')::bigint, 0)
+      + coalesce((surv->>'dragones')::bigint, 0);
 
     if e.troops is not null then
       merged := home_troops;
-      foreach tkey in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos'] loop
+      foreach tkey in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones'] loop
         merged := jsonb_set(
           merged,
           array[tkey],
@@ -1582,14 +1588,14 @@ begin
   if p_troops is null or jsonb_typeof(p_troops) <> 'object' then
     sent := coalesce(a.state->'troops', '{}'::jsonb);
   else
-    foreach tkey in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos'] loop
+    foreach tkey in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones'] loop
       want := greatest(0, coalesce((p_troops->>tkey)::integer, 0));
       sent := jsonb_set(sent, array[tkey], to_jsonb(want), true);
     end loop;
   end if;
 
   home := coalesce(a.state->'troops', '{}'::jsonb);
-  foreach tkey in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos'] loop
+  foreach tkey in array array['lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones'] loop
     want := coalesce((sent->>tkey)::integer, 0);
     have := coalesce((home->>tkey)::integer, 0);
     if want > have then raise exception 'not enough troops'; end if;
@@ -1668,7 +1674,7 @@ create table if not exists public.market_orders (
   id uuid primary key default gen_random_uuid(),
   player uuid not null references public.profiles (id) on delete cascade,
   side text not null check (side = 'sell'),
-  asset text not null check (asset in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos')),
+  asset text not null check (asset in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones')),
   qty bigint not null check (qty > 0),
   remaining bigint not null check (remaining >= 0),
   price bigint not null check (price > 0),
@@ -1680,7 +1686,7 @@ alter table public.market_orders drop constraint if exists market_orders_side_ch
 alter table public.market_orders add constraint market_orders_side_check check (side = 'sell');
 alter table public.market_orders drop constraint if exists market_orders_asset_check;
 alter table public.market_orders add constraint market_orders_asset_check
-  check (asset in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos'));
+  check (asset in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones'));
 
 create index if not exists market_orders_active_idx on public.market_orders (created_at desc) where remaining > 0;
 
@@ -1703,7 +1709,7 @@ begin
     have := coalesce((s->'res'->>asset)::numeric, 0);
     if have < qty then raise exception 'not enough'; end if;
     s := jsonb_set(s, array['res', asset], to_jsonb(have - qty), true);
-  elsif asset in ('lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos') then
+  elsif asset in ('lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones') then
     have := coalesce((s->'troops'->>asset)::numeric, 0);
     if have < qty then raise exception 'not enough'; end if;
     s := jsonb_set(s, array['troops', asset], to_jsonb(have - qty), true);
@@ -1729,7 +1735,7 @@ begin
     cur := coalesce((s->'res'->>asset)::numeric, 0);
     if cap is not null and cur + qty > cap then raise exception 'storage full'; end if;
     s := jsonb_set(s, array['res', asset], to_jsonb(cur + qty), true);
-  elsif asset in ('lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos') then
+  elsif asset in ('lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones') then
     cur := coalesce((s->'troops'->>asset)::numeric, 0);
     s := jsonb_set(s, array['troops', asset], to_jsonb(cur + qty), true);
   else
@@ -1786,7 +1792,7 @@ declare
 begin
   if me is null then raise exception 'not authenticated'; end if;
   if p_side is distinct from 'sell' then raise exception 'only sell offers allowed'; end if;
-  if p_asset not in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos') then
+  if p_asset not in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones') then
     raise exception 'invalid asset';
   end if;
   if p_qty is null or p_qty <= 0 or p_qty > 1000000000 then raise exception 'invalid qty'; end if;

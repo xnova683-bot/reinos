@@ -339,6 +339,9 @@
   };
 
   var TROOP_ART = {
+    alianza: {
+      arqueros: "./assets/troops/alianza-arqueros.webp?v=20261030l",
+    },
     horda: {
       arqueros: "./assets/troops/horda-arqueros.webp?v=20261030k",
     },

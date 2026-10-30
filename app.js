@@ -338,6 +338,20 @@
     },
   };
 
+  var TROOP_ART = {
+    enanos: {
+      arqueros: "./assets/troops/enanos-arqueros.webp?v=20261030i",
+    },
+  };
+
+  function troopArt(raceId, key, size) {
+    var src = TROOP_ART[raceId] && TROOP_ART[raceId][key];
+    if (!src) return "";
+    var px = size || 52;
+    return '<img class="tportrait" src="' + src + '" alt="" width="' + px + '" height="' + px +
+      '" loading="lazy" decoding="async">';
+  }
+
   var QUEUE_LIMIT = 4;
 
   var app = document.getElementById("app");
@@ -1466,7 +1480,7 @@
           .join("");
         return (
           '<div class="troop' + (unlocked ? "" : " locked") + '">' +
-            '<div class="trow"><span class="tname">' + def.name + '</span><span class="tcount">x' + num(state.troops[key] || 0) + "</span></div>" +
+            '<div class="trow"><div class="tmain">' + troopArt(state.race, key) + '<span class="tname">' + def.name + '</span></div><span class="tcount">x' + num(state.troops[key] || 0) + "</span></div>" +
             '<div class="tstats"><span>Nv. ' + def.lvl + '</span><span>Ataque ' + atk.toFixed(1) + "</span><span>Defensa " + dfn.toFixed(1) + "</span><span>Vida " + hp.toFixed(0) + "</span><span>" + def.time + "s /ud</span></div>" +
             '<div class="cost">' + costHtml + "</div>" +
             (unlocked
@@ -1776,7 +1790,7 @@
   function troopPicker(draft) {
     var rows = Object.keys(TROOPS).map(function (key) {
       var have = Math.max(0, Math.floor(Number(state.troops[key]) || 0));
-      return '<label class="troop-row"><span>' + TROOPS[key].name +
+      return '<label class="troop-row"><span class="troop-label">' + troopArt(state.race, key, 22) + TROOPS[key].name +
         ' <em>(' + num(have) + ')</em></span>' +
         '<input type="number" inputmode="numeric" min="0" max="' + have + '" step="1" value="' +
         Math.floor(Number(draft[key]) || 0) + '" data-send="' + key + '"></label>';

@@ -1328,6 +1328,11 @@
 
   /* ---------------- rendering ---------------- */
 
+  function playerClanTag(player) {
+    var tag = player && player.clan_tag ? String(player.clan_tag) : "";
+    return tag ? "[" + tag + "] " : "";
+  }
+
   function escapeHtml(text) {
     return String(text)
       .replace(/&/g, "&amp;")
@@ -1388,7 +1393,7 @@
                   .slice(0, 4)
                   .map(function (player) {
                     var dif = armyPower(state) / Math.max(1, player.power);
-                    return '<div class="info-line"><span>' + escapeHtml(player.name) + "</span><b>" +
+                    return '<div class="info-line"><span>' + escapeHtml(playerClanTag(player) + player.name) + "</span><b>" +
                       (dif >= 1.1 ? "Ventaja" : dif >= 0.85 ? "Parejo" : "Peligroso") + " · " + num(player.power) + "</b></div>";
                   })
                   .join("")
@@ -1546,6 +1551,8 @@
   var market = { orders: [], error: "", at: 0 };
   var marketMsg = null;
   var marketBusy = false;
+  var clanMsg = null;
+  var clanBusy = false;
   var pvpTarget = null;
   var npcTarget = null;
   var castleTarget = null;
@@ -1692,6 +1699,7 @@
           else if (message.indexOf("own order") !== -1) message = "No puedes operar con tu propia oferta.";
           else if (message.indexOf("closed") !== -1) message = "Esa oferta ya se agotó.";
           else if (message.indexOf("too many orders") !== -1) message = "Tienes demasiadas ofertas activas (máximo 20).";
+          else if (message.indexOf("full offer only") !== -1) message = "Esta oferta se compra completa.";
           else if (message.indexOf("invalid") !== -1) message = "Cantidad o precio inválido.";
           else if (message.indexOf("not yours") !== -1) message = "Esa oferta no es tuya.";
           marketMsg = { ok: false, text: message };
@@ -1703,10 +1711,19 @@
           ok: true,
           text:
             fn === "market_post"
-              ? "Venta publicada en el mercado."
+              ? "Venta publicada: " + num(data.qty || 0) + " " +
+                marketAssetName(data.asset) + " por " + num(data.price || 0) + " KB."
               : fn === "market_fill"
-                ? "Operación completada: " + num(data.qty || 0) + " × " +
-                  marketAssetName(data.asset) + " por " + num(data.total || 0) + " KB."
+                ? "Compra completada: " + num(data.qty || 0) + " " +
+                  marketAssetName(data.asset) + " por " + num(data.total || 0) + " KB." +
+                  (data.seller_cut != null
+                    ? " Vendedor " + num(data.seller_net != null ? data.seller_net : data.seller_cut) +
+                      " KB" + (Number(data.clan_tax || 0) > 0
+                        ? " (clan " + num(data.clan_tax) + " KB)"
+                        : "") +
+                      " · castillos " + num(data.castle_pool || 0) + " KB · admin " +
+                      num(data.admin_cut || 0) + " KB."
+                    : "")
                 : "Oferta cancelada y bienes devueltos.",
         };
         return refreshOwnProfile().then(syncMarket).then(function () {
@@ -1720,12 +1737,70 @@
       });
   }
 
+  function clanMessageError(message) {
+    if (message.indexOf("already in clan") !== -1) return "Ya perteneces a un clan.";
+    if (message.indexOf("not leader") !== -1) return "Solo el líder puede hacer eso.";
+    if (message.indexOf("clan full") !== -1) return "El clan está lleno (máximo 5 jugadores).";
+    if (message.indexOf("invalid code") !== -1) return "El código de invitación no es válido.";
+    if (message.indexOf("expired code") !== -1) return "Ese código de invitación caducó.";
+    if (message.indexOf("name taken") !== -1 || message.indexOf("tag taken") !== -1 ||
+        message.indexOf("name or tag taken") !== -1) {
+      return "Ese nombre o etiqueta ya está en uso.";
+    }
+    if (message.indexOf("invalid name") !== -1) return "El nombre debe tener entre 3 y 24 caracteres.";
+    if (message.indexOf("invalid tag") !== -1) return "La etiqueta debe tener 3 o 4 letras o números.";
+    if (message.indexOf("invalid tax") !== -1) return "El impuesto debe estar entre 0 y 100.";
+    if (message.indexOf("shares must total 100") !== -1) return "Los porcentajes deben sumar 100%.";
+    if (message.indexOf("shares not ready") !== -1) return "El líder debe confirmar los porcentajes después del último cambio de miembros.";
+    if (message.indexOf("invalid shares") !== -1) return "Los porcentajes no son válidos.";
+    if (message.indexOf("cooldown") !== -1) return "El arca ya se repartió en las últimas 24 horas.";
+    if (message.indexOf("treasury too low") !== -1) return "El arca necesita al menos 100 KB para repartir.";
+    if (message.indexOf("not enough kb") !== -1) return "No tienes KB suficientes.";
+    if (message.indexOf("leader must transfer") !== -1) return "Transfiere el liderazgo o disuelve el clan antes de salir.";
+    if (message.indexOf("not member") !== -1) return "Ese jugador ya no pertenece al clan.";
+    if (message.indexOf("no clan") !== -1 || message.indexOf("clan not found") !== -1) return "El clan ya no existe.";
+    if (message.indexOf("invalid member") !== -1) return "Elige otro miembro del clan.";
+    if (message.indexOf("invalid amount") !== -1) return "La cantidad debe ser mayor que 0.";
+    if (message.indexOf("could not create code") !== -1) return "No se pudo crear el código. Inténtalo otra vez.";
+    return message;
+  }
+
+  function clanAction(fn, body, okText) {
+    if (!isCloud() || clanBusy) return;
+    clanBusy = true;
+    clanMsg = null;
+    renderGame();
+    flushCloudSave().then(function () {
+      return api("/rest/v1/rpc/" + fn, { method: "POST", token: session.token, body: body || {} });
+    })
+      .then(function (result) {
+        clanBusy = false;
+        if (!result.ok) {
+          clanMsg = { ok: false, text: clanMessageError(cloudErrorMessage(result)) };
+          renderGame();
+          return;
+        }
+        var data = result.data || {};
+        clanMsg = { ok: true, text: typeof okText === "function" ? okText(data) : okText };
+        return refreshOwnProfile().then(syncWorld).then(function () {
+          if (view === "clan") renderGame();
+        });
+      })
+      .catch(function () {
+        clanBusy = false;
+        clanMsg = { ok: false, text: "No se pudo completar la operación del clan." };
+        renderGame();
+      });
+  }
+
   function stopWorldSync() {
     if (worldTimer) clearInterval(worldTimer);
     worldTimer = null;
     world = { players: [], regions: [], events: [], phones: [], npcs: [], castles: [], online: 0, roadBends: [], expeditions: [], moveSpeed: 1, settings: {}, maintenance: {}, me: {}, at: 0, error: "" };
     market = { orders: [], error: "", at: 0 };
     marketMsg = null;
+    clanMsg = null;
+    clanBusy = false;
     pvpTarget = null;
     npcTarget = null;
     castleTarget = null;
@@ -1899,6 +1974,49 @@
 
   function castleAttack(castleId) {
     startMarch("castle", castleId, attackTroops("castle:" + castleId));
+  }
+
+  function startCaravan(castleId) {
+    if (!isCloud() || pvpBusy) return;
+    if (!castleId) return;
+    pvpBusy = true;
+    pvpResult = null;
+    renderGame();
+    api("/rest/v1/rpc/start_caravan", {
+      method: "POST",
+      token: session.token,
+      body: { p_castle_id: castleId },
+    })
+      .then(function (result) {
+        pvpBusy = false;
+        if (!result.ok) {
+          var message = cloudErrorMessage(result);
+          if (message.indexOf("empty treasury") !== -1) message = "Ese castillo no tiene botín que recoger.";
+          else if (message.indexOf("not yours") !== -1) message = "Solo el rey puede enviar la caravana.";
+          else if (message.indexOf("expedition active") !== -1) message = "Ya tienes una marcha en camino.";
+          else if (message.indexOf("locked") !== -1) message = "Esa zona está bloqueada por el administrador.";
+          else if (message.indexOf("no village") !== -1) message = "Tu aldea aún no tiene posición en el mundo.";
+          else if (message.indexOf("not found") !== -1) message = "Ese castillo ya no existe.";
+          pvpResult = { ok: false, text: message };
+          renderGame();
+          return;
+        }
+        var data = result.data || {};
+        pvpResult = {
+          ok: true,
+          win: true,
+          text: "Caravana enviada a " + (data.target || "tu castillo") + " por " +
+            num(data.loot || 0) + " KB. Llegada en " + num(data.travel_seconds || 0) + " s.",
+        };
+        return refreshOwnProfile().then(syncWorld).then(function () {
+          renderGame();
+        });
+      })
+      .catch(function () {
+        pvpBusy = false;
+        pvpResult = { ok: false, text: "No se pudo enviar la caravana." };
+        renderGame();
+      });
   }
 
   function npcAttack(npcId) {
@@ -2502,6 +2620,7 @@
     }
     if (expedition.target_type === "npc") return "n:" + expedition.target_id;
     if (expedition.target_type === "castle") return "c:" + expedition.target_id;
+    if (expedition.target_type === "castle_loot") return "c:" + expedition.target_id;
     return "p:" + expedition.target_id;
   }
 
@@ -3186,6 +3305,225 @@
     );
   }
 
+  function clanWhen(value) {
+    if (!value) return "";
+    var date = new Date(value);
+    if (isNaN(date.getTime())) return "";
+    return date.toLocaleString("es-ES", {
+      day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+  }
+
+  function clanView() {
+    var clan = (world.me && world.me.clan) || null;
+    var msg = clanMsg
+      ? '<div class="market-msg ' + (clanMsg.ok ? "ok" : "bad") + '">' + escapeHtml(clanMsg.text) + "</div>"
+      : "";
+
+    if (!clan) {
+      return (
+        '<div class="panel clan-page">' +
+          '<div class="panel-head"><h2>Clan</h2>' +
+            '<span class="hint">Hasta 5 jugadores · arca común · reparto por porcentajes</span>' +
+          "</div>" +
+          '<div class="panel-body">' +
+            msg +
+            '<div class="clan-forms">' +
+              '<form id="clan-create-form" class="market-form">' +
+                '<label>Nombre del clan<input id="clan-name" type="text" minlength="3" maxlength="24" placeholder="Guardia de Hierro" /></label>' +
+                '<label>Etiqueta (3-4)<input id="clan-tag" type="text" minlength="3" maxlength="4" placeholder="GHI" /></label>' +
+                '<label>Impuesto inicial %<input id="clan-tax" type="number" min="0" max="100" step="1" value="20" /></label>' +
+                '<button class="btn-primary" type="submit"' + (clanBusy ? " disabled" : "") + ">" +
+                  (clanBusy ? "Creando…" : "Fundar clan") +
+                "</button>" +
+              "</form>" +
+              '<form id="clan-join-form" class="market-form">' +
+                '<label>Código de invitación<input id="clan-code" type="text" maxlength="6" placeholder="ABC123" /></label>' +
+                '<button class="btn" type="submit"' + (clanBusy ? " disabled" : "") + ">" +
+                  (clanBusy ? "Uniéndose…" : "Unirme por código") +
+                "</button>" +
+              "</form>" +
+            "</div>" +
+            '<div class="market-note">Fundar un clan es gratis. El líder invita con un código de 5 usos y 48 horas. ' +
+              "Solo el líder puede repartir el arca; los porcentajes deben sumar 100% y el reparto tiene un " +
+              "enfriamiento de 24 horas. El impuesto se descuenta solo del KB que produce el mercado y las caravanas." +
+            "</div>" +
+          "</div>" +
+        "</div>"
+      );
+    }
+
+    var members = Array.isArray(clan.members) ? clan.members : [];
+    var ledger = Array.isArray(clan.ledger) ? clan.ledger : [];
+    var invites = Array.isArray(clan.invites) ? clan.invites : [];
+    var isLeader = String(clan.leader) === String(session.userId);
+    var leaderName = "—";
+    var sharesTotal = 0;
+    members.forEach(function (member) {
+      sharesTotal += Number(member.share || 0);
+      if (String(member.id) === String(clan.leader)) leaderName = member.name;
+    });
+    var treasury = Number(clan.treasury || 0);
+    var sharesReady = clan.shares_ready !== false;
+    var cooldownLeft = 0;
+    if (clan.last_distributed_at) {
+      var lastAt = new Date(clan.last_distributed_at).getTime();
+      if (!isNaN(lastAt)) cooldownLeft = Math.max(0, lastAt + 24 * 60 * 60 * 1000 - Date.now());
+    }
+    var memberHtml = members
+      .map(function (member) {
+        var leader = member.role === "leader";
+        var self = String(member.id) === String(session.userId);
+        return (
+          '<div class="clan-member' + (leader ? " leader" : "") + '">' +
+            '<div class="cm-name"><b>' + escapeHtml(String(member.name || "Señor sin nombre")) + "</b>" +
+              (member.online ? ' <span class="cm-online">en línea</span>' : "") +
+              (self ? ' <span class="hint">(tú)</span>' : "") +
+            "</div>" +
+            '<span class="cm-role">' + (leader ? "Líder" : "Miembro") + "</span>" +
+            '<span class="cm-share">' + Number(member.share || 0) + "%</span>" +
+            '<span class="cm-contrib">' + num(member.contributed || 0) + " KB aportados</span>" +
+            (isLeader && !leader
+              ? '<span class="cm-actions">' +
+                  '<button class="btn small" data-clan-leader="' + escapeHtml(String(member.id)) + '"' +
+                    ' data-clan-name="' + escapeHtml(String(member.name || "")) + '">Líder</button>' +
+                  '<button class="btn small danger" data-clan-kick="' + escapeHtml(String(member.id)) + '"' +
+                    ' data-clan-name="' + escapeHtml(String(member.name || "")) + '">Expulsar</button>' +
+                "</span>"
+              : "") +
+          "</div>"
+        );
+      })
+      .join("");
+
+    var sharesHtml = members.length
+      ? members
+          .map(function (member) {
+            return (
+              '<label class="clan-share-row">' +
+                '<span>' + escapeHtml(String(member.name || "Señor sin nombre")) +
+                  (member.role === "leader" ? " (líder)" : "") + "</span>" +
+                '<input type="number" min="0" max="100" step="1" data-clan-share="' +
+                  escapeHtml(String(member.id)) + '" value="' + Number(member.share || 0) + '" />' +
+                '<span class="hint">%</span>' +
+              "</label>"
+            );
+          })
+          .join("")
+      : "";
+
+    var inviteHtml = isLeader
+      ? '<div class="clan-section">' +
+          '<div class="clan-section-head"><h3>Invitaciones</h3>' +
+            '<button class="btn small" data-clan-invite="1"' + (clanBusy ? " disabled" : "") + ">Crear código</button>" +
+          "</div>" +
+          (invites.length
+            ? '<div class="clan-invites">' + invites.map(function (invite) {
+                return '<div class="clan-invite"><code>' + escapeHtml(String(invite.code)) + "</code>" +
+                  '<span>' + Number(invite.uses_left || 0) + " usos · caduca " +
+                  escapeHtml(clanWhen(invite.expires_at)) + "</span></div>";
+              }).join("") + "</div>"
+            : '<div class="market-empty">No hay códigos activos. Crea uno y compártelo con tus futuros miembros.</div>') +
+        "</div>"
+      : "";
+
+    var ledgerHtml = ledger.length
+      ? ledger.map(function (entry) {
+          var labels = {
+            create: "Creación", join: "Ingreso", leave: "Salida", kick: "Expulsión",
+            leader: "Liderazgo", tax: "Impuesto", market: "Mercado", caravan: "Caravana",
+            donation: "Donación", distribution: "Reparto",
+          };
+          var amount = Number(entry.amount || 0);
+          return (
+            '<div class="clan-ledger-row">' +
+              '<span class="cl-kind">' + escapeHtml(labels[entry.kind] || String(entry.kind)) + "</span>" +
+              '<span class="cl-main">' + escapeHtml(String(entry.detail || entry.player_name || "")) + "</span>" +
+              (amount ? '<span class="cl-amount">' + (amount > 0 ? "+" : "") + num(amount) + " KB</span>" : "") +
+              '<span class="cl-when">' + escapeHtml(clanWhen(entry.at)) + "</span>" +
+            "</div>"
+          );
+        }).join("")
+      : '<div class="market-empty">Todavía no hay movimientos.</div>';
+
+    var leaderTools = isLeader
+      ? '<div class="clan-section">' +
+          '<div class="clan-section-head"><h3>Gobierno del clan</h3>' +
+            '<span class="hint">Impuesto actual: ' + Number(clan.tax_rate || 0) + "%</span>" +
+          "</div>" +
+          '<form id="clan-tax-form" class="market-form clan-inline-form">' +
+            '<label>Impuesto del clan %<input id="clan-tax-input" type="number" min="0" max="100" step="1" value="' +
+              Number(clan.tax_rate || 0) + '" /></label>' +
+            '<button class="btn" type="submit">Guardar impuesto</button>' +
+          "</form>" +
+          '<form id="clan-shares-form" class="clan-shares">' +
+            '<div class="clan-share-total">Reparto: <b class="' + (sharesTotal === 100 ? "ok" : "bad") + '">' +
+              sharesTotal + "%</b> · " + (sharesReady ? "confirmado" : "pendiente de confirmar") +
+              " · debe sumar 100%</div>" +
+            sharesHtml +
+            '<button class="btn" type="submit">Guardar porcentajes</button>' +
+          "</form>" +
+          (!sharesReady
+            ? '<div class="market-note">Los miembros cambiaron: guarda los porcentajes de nuevo antes de repartir.</div>'
+            : "") +
+          '<div class="clan-actions">' +
+            '<button class="btn-primary" data-clan-distribute="1"' +
+              (clanBusy || !sharesReady ? " disabled" : "") + ">" +
+              (clanBusy ? "Procesando…" : "Repartir arca") +
+            "</button>" +
+            '<button class="btn danger" data-clan-disband="1"' + (clanBusy ? " disabled" : "") + ">Disolver clan</button>" +
+          "</div>" +
+          (cooldownLeft > 0
+            ? '<div class="market-note">Próximo reparto disponible en ' +
+              Math.ceil(cooldownLeft / 3600000) + " h.</div>"
+            : "") +
+        "</div>"
+      : '<div class="clan-section"><div class="clan-section-head"><h3>Miembros</h3></div>' +
+          '<div class="market-note">Solo el líder puede cambiar el impuesto, los porcentajes y repartir el arca.</div>' +
+        "</div>";
+
+    return (
+      '<div class="panel clan-page">' +
+        '<div class="panel-head clan-head">' +
+          '<div><h2>' + escapeHtml(String(clan.name)) +
+            ' <span class="clan-tag">[' + escapeHtml(String(clan.tag)) + "]</span></h2>" +
+            '<span class="hint">Líder: ' + escapeHtml(String(leaderName)) + " · " +
+              members.length + "/5 miembros</span>" +
+          "</div>" +
+          '<div class="clan-fund"><span>Arca del clan</span><b>' + num(treasury) + " KB</b>" +
+            '<span>Impuesto ' + Number(clan.tax_rate || 0) + "%</span></div>" +
+        "</div>" +
+        '<div class="panel-body">' +
+          msg +
+          '<div class="clan-summary">' +
+            '<div><b>' + num(treasury) + '</b><span>KB en el arca</span></div>' +
+            '<div><b>' + sharesTotal + '%</b><span>reparto asignado</span></div>' +
+            '<div><b>' + Number(clan.tax_rate || 0) + '%</b><span>impuesto</span></div>' +
+          "</div>" +
+          '<div class="clan-section"><div class="clan-section-head"><h3>Miembros</h3></div>' +
+            '<div class="clan-members">' + memberHtml + "</div>" +
+          "</div>" +
+          leaderTools +
+          inviteHtml +
+          '<div class="clan-section">' +
+            '<div class="clan-section-head"><h3>Arca</h3>' +
+              '<span class="hint">Solo mercado y caravanas generan impuesto</span></div>' +
+            '<form id="clan-donate-form" class="market-form clan-inline-form">' +
+              '<label>Donar KB al arca<input id="clan-donate-input" type="number" min="1" step="1" value="100" /></label>' +
+              '<button class="btn" type="submit">Donar</button>' +
+            "</form>" +
+            (isLeader
+              ? ""
+              : '<button class="btn danger" data-clan-leave="1"' + (clanBusy ? " disabled" : "") + ">Salir del clan</button>") +
+          "</div>" +
+          '<div class="clan-section"><div class="clan-section-head"><h3>Historial</h3></div>' +
+            '<div class="clan-ledger">' + ledgerHtml + "</div>" +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+  }
+
   function marketView() {
     var options = Object.keys(MARKET_ASSETS)
       .map(function (asset) {
@@ -3199,7 +3537,7 @@
       })
       .map(function (order) {
         var mine = !!order.mine;
-        var total = Number(order.remaining) * Number(order.price);
+        var total = Number(order.price) || 0;
         return (
           '<div class="market-order' + (mine ? " mine" : "") + '">' +
             '<span class="mo-tag sell">Venta</span>' +
@@ -3208,15 +3546,15 @@
               (Number(order.qty) !== Number(order.remaining)
                 ? ' <span class="hint">de ' + num(order.qty) + "</span>"
                 : "") +
-              "<span>" + num(order.price) + " KB/u · total " + num(total) + " KB · " +
+              "<span>Precio total: " + num(total) + " KB · " +
                 (mine ? "tu oferta" : escapeHtml(String(order.name))) + "</span>" +
             "</div>" +
             '<div class="mo-actions">' +
               (mine
                 ? '<button class="btn small" data-market-cancel="' + escapeHtml(String(order.id)) + '">Cancelar</button>'
                 : '<button class="btn small" data-market-fill="' + escapeHtml(String(order.id)) +
-                  '" data-market-left="' + escapeHtml(String(order.remaining)) + '"' +
-                  (marketBusy ? " disabled" : "") + ">Comprar</button>") +
+                  '"' + (marketBusy ? " disabled" : "") + ">Comprar por " +
+                  num(total) + " KB</button>") +
             "</div>" +
           "</div>"
         );
@@ -3230,7 +3568,7 @@
     return (
       '<div class="panel market-page">' +
         '<div class="panel-head"><h2>Mercado</h2>' +
-          '<span class="hint">Solo ofertas de venta · recursos y tropas por KB</span>' +
+          '<span class="hint">Ofertas completas · pagas KB y recibes todo el lote</span>' +
         "</div>" +
         '<div class="panel-body">' +
           '<div class="market-top">Tu KB: <b>' + num((session && session.kb) || 0) +
@@ -3239,13 +3577,19 @@
           '<form id="market-form" class="market-form">' +
             '<label>Bien<select id="market-asset">' + options + "</select></label>" +
             '<label>Cantidad<input id="market-qty" type="number" min="1" step="1" value="100" /></label>' +
-            '<label>KB por unidad<input id="market-price" type="number" min="1" step="1" value="1" /></label>' +
+            '<label>Precio total (KB)<input id="market-price" type="number" min="1" step="1" value="10" /></label>' +
             '<button class="btn-primary" type="submit"' + (marketBusy ? " disabled" : "") + ">" +
               (marketBusy ? "Publicando…" : "Publicar venta") +
             "</button>" +
           "</form>" +
+          '<div class="market-note">El precio es por toda la oferta, no por unidad. Ejemplo: 100 de oro ' +
+            "por 10 KB significa que el comprador paga 10 KB y recibe los 100 de oro.</div>" +
           '<div class="market-note">Solo puedes publicar ofertas de venta: el bien queda en custodia ' +
             "hasta que alguien lo compre. Puedes cancelar cuando quieras y recuperas lo que quede.</div>" +
+          '<div class="market-note">Reparto: vendedor 80% y administración 5%, ambos redondeados a la baja. ' +
+            "Los castillos de zonas abiertas reciben el resto (15% o el sobrante del redondeo) a partes iguales. " +
+            "El rey recoge su parte con una caravana. Si no hay castillos abiertos, ese resto va al fondo mundial. " +
+            "Si el vendedor tiene clan, su impuesto sale solo de su 80%.</div>" +
           '<div class="market-list">' +
             (market.error
               ? '<div class="market-msg bad">' + escapeHtml(market.error) + "</div>"
@@ -3332,11 +3676,13 @@
 
     var mePos = session && session.village ? session.village : { x: 0.5, y: 0.5 };
     var myName = (session && session.username) || "Tu aldea";
+    var myClanTag = world.me && world.me.clan && world.me.clan.tag
+      ? "[" + String(world.me.clan.tag) + "] " : "";
     var meMarker = !(session && session.village) || (session && session.isAdmin) ? "" :
       '<div class="marker me" data-map-village="1" data-mx="' + mePos.x + '" data-my="' + mePos.y + '" ' +
-        'title="Tu aldea" ' +
+        'title="' + escapeHtml(myClanTag + myName) + '" ' +
         'style="left:' + (mePos.x * 100).toFixed(2) + "%;top:" + (mePos.y * 100).toFixed(2) + '%">' +
-        '<span class="mlabel">' + escapeHtml(myName) + '</span><span class="village-emoji" aria-hidden="true">🏘️</span>' +
+        '<span class="mlabel">' + escapeHtml(myClanTag + myName) + '</span><span class="village-emoji" aria-hidden="true">🏘️</span>' +
       "</div>";
 
     var regionLocked = function (regionId) {
@@ -3453,9 +3799,10 @@
         return (
           '<button class="marker player ' + player.race + tag + '" data-map-player="' + escapeHtml(player.id) + '" ' +
             'data-mx="' + player.x + '" data-my="' + player.y + '" ' +
-            'title="' + escapeHtml(player.name) + " · Poder " + num(player.power) + '" ' +
+            'title="' + escapeHtml(playerClanTag(player) + player.name) + " · Poder " + num(player.power) + '" ' +
             'style="left:' + (player.x * 100).toFixed(2) + "%;top:" + (player.y * 100).toFixed(2) + '%">' +
-            '<span class="mlabel">' + (player.shield ? "&#9930; " : "") + escapeHtml(player.name) + "</span>" +
+            '<span class="mlabel">' + (player.shield ? "&#9930; " : "") +
+              escapeHtml(playerClanTag(player) + player.name) + "</span>" +
             '<span class="village-emoji" aria-hidden="true">🏘️</span>' +
           "</button>"
         );
@@ -3505,6 +3852,7 @@
       var castleDefense = Number(castleTarget.defense) || Number(castleTarget.power) || 0;
       var castleLoot = Number(castleTarget.loot) || 0;
       var castleShare = Math.round(castleLoot / 4);
+      var castleTreasury = Number(castleTarget.treasury) || 0;
       var castleInv = invasionInfo(castleTarget.region);
       var castleOdds = Math.round(clamp((sendPower * castleInv.mult / Math.max(1, castleDefense)) * 100, 1, 99));
       var castleMine = !!castleTarget.owner && String(castleTarget.owner) === String(session && session.userId);
@@ -3518,9 +3866,10 @@
             '<span class="npc-meta">Poder de defensa <b>' + num(castleDefense) + "</b></span>" +
             "<span>Botín al conquistarlo: <b>" + num(castleLoot) + "</b> recursos (" +
               num(castleShare) + " de oro, madera, comida y piedra).</span>" +
+            "<span>Botín del mercado: <b>" + num(castleTreasury) + "</b> KB acumulados.</span>" +
             "<span>Éxito estimado: <b>" + num(castleOdds) + "%</b></span>" +
             invasionLines(castleInv) +
-            (castleMine ? '<span class="pvp-warn">Este castillo es tuyo: eres el rey.</span>' : "") +
+            (castleMine ? '<span class="pvp-warn">Este castillo es tuyo: eres el rey. El 15% de cada venta del mercado se acumula aquí.</span>' : "") +
             (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
             (armyCount(state) <= 0 && !castleMine ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
             (!castleMine && armyCount(state) > 0 && sendTotal <= 0 ? '<span class="pvp-warn">Selecciona al menos una tropa para enviar.</span>' : "") +
@@ -3530,6 +3879,13 @@
             '<button class="btn-primary" id="castle-attack-btn"' + (pvpBusy || castleMine || sendTotal <= 0 || myMarch || castleInv.far || castleInv.poor ? " disabled" : "") + ">" +
               (myMarch ? "Marcha en curso" : pvpBusy ? "Preparando…" : "Enviar ejército") +
             "</button>" +
+            (castleMine
+              ? '<button class="btn" id="castle-collect-btn"' +
+                (pvpBusy || myMarch || castleTreasury <= 0 ? " disabled" : "") + ">" +
+                (myMarch ? "Caravana en curso" : pvpBusy ? "Preparando…" :
+                  castleTreasury > 0 ? "Enviar caravana (" + num(castleTreasury) + " KB)" : "Sin botín") +
+                "</button>"
+              : "") +
             '<button class="btn" id="castle-cancel-btn">Cancelar</button>' +
           "</div>" +
         "</div>";
@@ -3599,18 +3955,21 @@
     if (myMarch) {
       var marchRegion = regionById(myMarch.to_region);
       var outboundMarch = myMarch.status === "outbound";
+      var caravanMarch = myMarch.target_type === "castle_loot";
       var eta = secondsUntil(outboundMarch ? myMarch.arrive_at : myMarch.return_at);
       marchCard =
         '<div class="pvp-card march-card">' +
-          '<div class="pvp-info"><b>Marcha de tu ejército</b>' +
+          '<div class="pvp-info"><b>' + (caravanMarch ? "Caravana del rey" : "Marcha de tu ejército") + "</b>" +
             "<span>Destino: " + escapeHtml(myMarch.target_name || "objetivo") +
               (marchRegion ? " · " + escapeHtml(marchRegion.name) : "") + "</span>" +
-            "<span>" + (outboundMarch ? "En camino; combate al llegar." : "Regresando de la batalla.") +
+            "<span>" + (caravanMarch
+              ? (outboundMarch ? "En camino a recoger el botín." : "Regresando con el botín.")
+              : (outboundMarch ? "En camino; combate al llegar." : "Regresando de la batalla.")) +
               " Quedan <b id=\"march-countdown\">" + num(eta) + "</b> s.</span>" +
-            (myMarch.troops && troopSummary(myMarch.troops)
+            (!caravanMarch && myMarch.troops && troopSummary(myMarch.troops)
               ? "<span>Tropas enviadas: <b>" + escapeHtml(troopSummary(myMarch.troops)) + "</b></span>"
               : "") +
-            (myMarch.survivors
+            (!caravanMarch && myMarch.survivors
               ? "<span>Supervivientes: <b>" + escapeHtml(troopSummary(myMarch.survivors) || "ninguno") + "</b></span>"
               : "") +
             '<span class="npc-meta">Velocidad del reino: <b>x' + Number(world.moveSpeed || 1).toFixed(2) + "</b></span>" +
@@ -4243,6 +4602,8 @@
 
     var castleAttackBtn = document.getElementById("castle-attack-btn");
     if (castleAttackBtn) castleAttackBtn.addEventListener("click", function () { if (castleTarget) castleAttack(castleTarget.id); });
+    var castleCollectBtn = document.getElementById("castle-collect-btn");
+    if (castleCollectBtn) castleCollectBtn.addEventListener("click", function () { if (castleTarget) startCaravan(castleTarget.id); });
     var castleCancelBtn = document.getElementById("castle-cancel-btn");
     if (castleCancelBtn) castleCancelBtn.addEventListener("click", function () {
       castleTarget = null;
@@ -4469,6 +4830,7 @@
       ["cuartel", "Cuartel"],
       ["mapa", "Mapa"],
       ["mercado", "Mercado"],
+      ["clan", "Clan"],
       ["raza", "Raza"],
     ];
     if (session && session.isAdmin) tabs.push(["admin", "Administrar WoW"]);
@@ -4476,6 +4838,7 @@
     if (view === "cuartel") center = troopsView();
     else if (view === "mapa") center = mapView();
     else if (view === "mercado") center = marketView();
+    else if (view === "clan") center = clanView();
     else if (view === "raza") center = raceView();
     else if (view === "admin" && session && session.isAdmin) center = adminView();
     else center = buildingsView();
@@ -4659,18 +5022,8 @@
 
     Array.prototype.forEach.call(app.querySelectorAll("[data-market-fill]"), function (button) {
       button.addEventListener("click", function () {
-        var left = Number(button.getAttribute("data-market-left")) || 1;
-        var raw = window.prompt("¿Cuántas unidades quieres operar? (quedan " + left + ")");
-        if (raw === null) return;
-        var qty = Math.trunc(Number(raw));
-        if (!qty || qty < 1) {
-          marketMsg = { ok: false, text: "Escribe una cantidad válida." };
-          renderGame();
-          return;
-        }
         marketAction("market_fill", {
           p_order_id: button.getAttribute("data-market-fill"),
-          p_qty: qty,
         });
       });
     });
@@ -4678,6 +5031,164 @@
     Array.prototype.forEach.call(app.querySelectorAll("[data-market-cancel]"), function (button) {
       button.addEventListener("click", function () {
         marketAction("market_cancel", { p_order_id: button.getAttribute("data-market-cancel") });
+      });
+    });
+  }
+
+  function bindClanEvents() {
+    var createForm = document.getElementById("clan-create-form");
+    if (createForm) {
+      createForm.addEventListener("submit", function (event) {
+        if (event.preventDefault) event.preventDefault();
+        if (clanBusy) return;
+        var nameEl = document.getElementById("clan-name");
+        var tagEl = document.getElementById("clan-tag");
+        var taxEl = document.getElementById("clan-tax");
+        var name = String(nameEl ? nameEl.value : "").trim();
+        var tag = String(tagEl ? tagEl.value : "").trim().toUpperCase();
+        var tax = Math.trunc(Number(taxEl ? taxEl.value : 20));
+        if (name.length < 3 || name.length > 24) {
+          clanMsg = { ok: false, text: "El nombre debe tener entre 3 y 24 caracteres." };
+          renderGame();
+          return;
+        }
+        if (!/^[A-Z0-9]{3,4}$/.test(tag)) {
+          clanMsg = { ok: false, text: "La etiqueta debe tener 3 o 4 letras o números." };
+          renderGame();
+          return;
+        }
+        if (!isFinite(tax) || tax < 0 || tax > 100) {
+          clanMsg = { ok: false, text: "El impuesto debe estar entre 0 y 100." };
+          renderGame();
+          return;
+        }
+        clanAction("clan_create", { p_name: name, p_tag: tag, p_tax_rate: tax }, "Clan fundado.");
+      });
+    }
+
+    var joinForm = document.getElementById("clan-join-form");
+    if (joinForm) {
+      joinForm.addEventListener("submit", function (event) {
+        if (event.preventDefault) event.preventDefault();
+        if (clanBusy) return;
+        var codeEl = document.getElementById("clan-code");
+        var code = String(codeEl ? codeEl.value : "").trim().toUpperCase();
+        if (!code) {
+          clanMsg = { ok: false, text: "Escribe un código de invitación." };
+          renderGame();
+          return;
+        }
+        clanAction("clan_accept", { p_code: code }, "Te uniste al clan.");
+      });
+    }
+
+    var taxForm = document.getElementById("clan-tax-form");
+    if (taxForm) {
+      taxForm.addEventListener("submit", function (event) {
+        if (event.preventDefault) event.preventDefault();
+        if (clanBusy) return;
+        var input = document.getElementById("clan-tax-input");
+        var rate = Math.trunc(Number(input ? input.value : 0));
+        if (!isFinite(rate) || rate < 0 || rate > 100) {
+          clanMsg = { ok: false, text: "El impuesto debe estar entre 0 y 100." };
+          renderGame();
+          return;
+        }
+        clanAction("clan_set_tax", { p_rate: rate }, "Impuesto del clan actualizado.");
+      });
+    }
+
+    var sharesForm = document.getElementById("clan-shares-form");
+    if (sharesForm) {
+      sharesForm.addEventListener("submit", function (event) {
+        if (event.preventDefault) event.preventDefault();
+        if (clanBusy) return;
+        var shares = {};
+        var total = 0;
+        Array.prototype.forEach.call(app.querySelectorAll("[data-clan-share]"), function (input) {
+          var value = Math.trunc(Number(input.value || 0));
+          if (!isFinite(value) || value < 0 || value > 100) {
+            shares = null;
+            return;
+          }
+          shares[input.getAttribute("data-clan-share")] = value;
+          total += value;
+        });
+        if (!shares) {
+          clanMsg = { ok: false, text: "Cada porcentaje debe estar entre 0 y 100." };
+          renderGame();
+          return;
+        }
+        if (total !== 100) {
+          clanMsg = { ok: false, text: "Los porcentajes deben sumar 100% (ahora suman " + total + "%)." };
+          renderGame();
+          return;
+        }
+        clanAction("clan_set_shares", { p_shares: shares }, "Porcentajes guardados.");
+      });
+    }
+
+    var donateForm = document.getElementById("clan-donate-form");
+    if (donateForm) {
+      donateForm.addEventListener("submit", function (event) {
+        if (event.preventDefault) event.preventDefault();
+        if (clanBusy) return;
+        var input = document.getElementById("clan-donate-input");
+        var amount = Math.trunc(Number(input ? input.value : 0));
+        if (!isFinite(amount) || amount <= 0) {
+          clanMsg = { ok: false, text: "La donación debe ser mayor que 0 KB." };
+          renderGame();
+          return;
+        }
+        clanAction("clan_donate", { p_amount: amount }, "Donación añadida al arca.");
+      });
+    }
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-clan-invite]"), function (button) {
+      button.addEventListener("click", function () {
+        clanAction("clan_invite", {}, function (data) {
+          return "Código creado: " + String((data && data.code) || "") + " (5 usos · 48 h).";
+        });
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-clan-distribute]"), function (button) {
+      button.addEventListener("click", function () {
+        if (!window.confirm("¿Repartir todo el arca del clan según los porcentajes actuales?")) return;
+        clanAction("clan_distribute", {}, function (data) {
+          return "Arca repartida: " + num((data && data.total) || 0) + " KB.";
+        });
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-clan-disband]"), function (button) {
+      button.addEventListener("click", function () {
+        if (!window.confirm("¿Disolver el clan? El arca se repartirá y el clan desaparecerá.")) return;
+        clanAction("clan_disband", {}, "Clan disuelto.");
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-clan-leave]"), function (button) {
+      button.addEventListener("click", function () {
+        if (!window.confirm("¿Salir del clan? Tu porcentaje quedará libre.")) return;
+        clanAction("clan_leave", {}, "Saliste del clan.");
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-clan-kick]"), function (button) {
+      button.addEventListener("click", function () {
+        var name = button.getAttribute("data-clan-name") || "ese jugador";
+        if (!window.confirm("¿Expulsar a " + name + " del clan?")) return;
+        clanAction("clan_kick", { p_player: button.getAttribute("data-clan-kick") }, "Miembro expulsado.");
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-clan-leader]"), function (button) {
+      button.addEventListener("click", function () {
+        var name = button.getAttribute("data-clan-name") || "ese jugador";
+        if (!window.confirm("¿Transferir el liderazgo a " + name + "?")) return;
+        clanAction("clan_transfer_leader", { p_player: button.getAttribute("data-clan-leader") },
+          "Liderazgo transferido.");
       });
     });
   }
@@ -4699,6 +5210,11 @@
       if (view === "mercado" && isCloud()) {
         syncMarket().then(function () {
           if (view === "mercado") renderGame();
+        });
+      }
+      if (view === "clan" && isCloud() && (!world.at || now() - world.at > 5000)) {
+        syncWorld().then(function () {
+          if (view === "clan") renderGame();
         });
       }
       if (view === "admin" && isCloud() && (!world.at || now() - world.at > 5000)) {
@@ -4728,6 +5244,7 @@
     });
     bindAdminSettings();
     bindMarketEvents();
+    bindClanEvents();
     initMap();
     startMarchAnimation();
   }

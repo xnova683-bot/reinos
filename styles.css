@@ -1989,6 +1989,291 @@ body.race-enanos .map {
   text-align: center;
 }
 
+.btn.danger {
+  border-color: rgba(217, 92, 92, 0.55);
+  color: #f0b0b0;
+}
+
+.btn.danger:hover {
+  border-color: rgba(217, 92, 92, 0.9);
+  color: #ffdede;
+}
+
+.clan-page .panel-body {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.clan-head {
+  align-items: flex-start;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.clan-head h2 {
+  margin: 0;
+  line-height: 1.25;
+}
+
+.clan-tag {
+  color: var(--gold);
+  font-size: 0.58em;
+  letter-spacing: 0.06em;
+  vertical-align: middle;
+}
+
+.clan-fund {
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.05rem;
+  font-size: 0.72rem;
+  color: var(--text-sub);
+}
+
+.clan-fund b {
+  color: var(--gold);
+  font-size: 1.15rem;
+}
+
+.clan-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.clan-summary > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.clan-summary b {
+  color: var(--gold);
+  font-size: 1rem;
+}
+
+.clan-summary span {
+  color: var(--text-sub);
+  font-size: 0.68rem;
+}
+
+.clan-forms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.7rem;
+}
+
+.clan-section {
+  display: grid;
+  gap: 0.55rem;
+  padding: 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.clan-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.clan-section-head h3 {
+  margin: 0;
+  color: var(--gold);
+  font-size: 0.88rem;
+}
+
+.clan-members {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.clan-member {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.clan-member.leader {
+  border-color: rgba(216, 189, 82, 0.42);
+  background: rgba(216, 189, 82, 0.06);
+}
+
+.cm-name {
+  flex: 1;
+  min-width: 8rem;
+  font-size: 0.82rem;
+}
+
+.cm-online {
+  color: #a9e2bd;
+  font-size: 0.64rem;
+  font-weight: 600;
+}
+
+.cm-role {
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-sub);
+  font-size: 0.64rem;
+}
+
+.cm-share {
+  color: var(--gold);
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+
+.cm-contrib {
+  color: var(--text-sub);
+  font-size: 0.68rem;
+}
+
+.cm-actions {
+  display: flex;
+  gap: 0.3rem;
+  margin-left: auto;
+}
+
+.clan-share-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 4.8rem auto;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+}
+
+.clan-share-row input {
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.clan-shares {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.clan-share-total {
+  font-size: 0.74rem;
+  color: var(--text-sub);
+}
+
+.clan-share-total b.ok {
+  color: #a9e2bd;
+}
+
+.clan-share-total b.bad {
+  color: #e08a8a;
+}
+
+.clan-inline-form {
+  grid-template-columns: minmax(150px, 1fr) auto;
+}
+
+.clan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.clan-invites {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.clan-invite {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 0.72rem;
+  color: var(--text-sub);
+}
+
+.clan-invite code {
+  color: var(--gold);
+  font-size: 0.9rem;
+  letter-spacing: 0.1em;
+}
+
+.clan-ledger {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.clan-ledger-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  font-size: 0.7rem;
+  color: var(--text-sub);
+}
+
+.cl-kind {
+  color: var(--gold);
+  font-weight: 600;
+  min-width: 4.5rem;
+}
+
+.cl-main {
+  flex: 1;
+  min-width: 8rem;
+  color: var(--text);
+}
+
+.cl-amount {
+  color: #a9e2bd;
+  font-weight: 600;
+}
+
+.cl-when {
+  margin-left: auto;
+  color: var(--text-sub);
+  font-size: 0.66rem;
+}
+
+@media (max-width: 560px) {
+  .clan-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .clan-fund {
+    margin-left: 0;
+    align-items: flex-start;
+  }
+
+  .clan-inline-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .kb-line b {
   color: var(--gold);
 }

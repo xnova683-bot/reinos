@@ -60,6 +60,7 @@ alter table public.world_settings add column if not exists maintenance_version b
 alter table public.world_settings add column if not exists resource_speed numeric not null default 1;
 alter table public.world_settings add column if not exists movement_speed numeric not null default 1;
 alter table public.world_settings add column if not exists village_spacing_version integer not null default 0;
+alter table public.world_settings add column if not exists world_treasury bigint not null default 0;
 
 insert into public.world_settings (id, map_image)
 values (1, null)
@@ -82,7 +83,7 @@ alter table public.road_bends enable row level security;
 create table if not exists public.expeditions (
   id uuid primary key default gen_random_uuid(),
   attacker uuid not null references public.profiles (id) on delete cascade,
-  target_type text not null check (target_type in ('player', 'npc', 'castle')),
+  target_type text not null check (target_type in ('player', 'npc', 'castle', 'castle_loot')),
   target_id uuid not null,
   target_name text not null,
   from_region integer references public.regions (id) on delete set null,
@@ -104,6 +105,10 @@ create table if not exists public.expeditions (
   resolved_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table public.expeditions drop constraint if exists expeditions_target_type_check;
+alter table public.expeditions add constraint expeditions_target_type_check
+  check (target_type in ('player', 'npc', 'castle', 'castle_loot'));
 
 create index if not exists expeditions_active_idx
   on public.expeditions (status, arrive_at);
@@ -177,9 +182,11 @@ create table if not exists public.castles (
   power integer not null default 330,
   loot integer not null default 800,
   owner uuid references public.profiles (id) on delete set null,
+  treasury bigint not null default 0,
   updated_at timestamptz not null default now()
 );
 
+alter table public.castles add column if not exists treasury bigint not null default 0;
 alter table public.castles enable row level security;
 drop policy if exists "castles_read" on public.castles;
 create policy "castles_read" on public.castles for select to authenticated using (true);
@@ -192,6 +199,77 @@ create table if not exists public.castle_hits (
 );
 
 alter table public.castle_hits enable row level security;
+
+-- ============================================================
+-- Clanes (máximo 5 miembros)
+-- ============================================================
+
+create table if not exists public.clans (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  tag text not null,
+  leader_id uuid not null references public.profiles (id) on delete cascade,
+  treasury bigint not null default 0,
+  tax_rate integer not null default 20 check (tax_rate between 0 and 100),
+  shares_ready boolean not null default true,
+  last_distributed_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.clans add column if not exists shares_ready boolean not null default true;
+
+create unique index if not exists clans_name_key on public.clans (lower(name));
+create unique index if not exists clans_tag_key on public.clans (upper(tag));
+create unique index if not exists clans_leader_key on public.clans (leader_id);
+
+create table if not exists public.clan_members (
+  player_id uuid primary key references public.profiles (id) on delete cascade,
+  clan_id uuid not null references public.clans (id) on delete cascade,
+  role text not null default 'member' check (role in ('leader', 'member')),
+  share_pct integer not null default 0 check (share_pct between 0 and 100),
+  contributed bigint not null default 0,
+  joined_at timestamptz not null default now()
+);
+
+create index if not exists clan_members_clan_idx on public.clan_members (clan_id);
+
+create table if not exists public.clan_invites (
+  code text primary key,
+  clan_id uuid not null references public.clans (id) on delete cascade,
+  created_by uuid references public.profiles (id) on delete set null,
+  uses_left integer not null default 1 check (uses_left >= 0),
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists clan_invites_clan_idx on public.clan_invites (clan_id);
+
+create table if not exists public.clan_ledger (
+  id bigserial primary key,
+  clan_id uuid not null references public.clans (id) on delete cascade,
+  player_id uuid references public.profiles (id) on delete set null,
+  kind text not null,
+  amount bigint not null default 0,
+  detail text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists clan_ledger_clan_idx on public.clan_ledger (clan_id, created_at desc);
+
+create table if not exists public.clan_distributions (
+  id bigserial primary key,
+  clan_id uuid not null references public.clans (id) on delete cascade,
+  total bigint not null default 0,
+  shares jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+alter table public.clans enable row level security;
+alter table public.clan_members enable row level security;
+alter table public.clan_invites enable row level security;
+alter table public.clan_ledger enable row level security;
+alter table public.clan_distributions enable row level security;
 
 alter table public.regions enable row level security;
 alter table public.world_settings enable row level security;
@@ -693,7 +771,8 @@ begin
         'id', p.id, 'admin', p.is_admin, 'region', p.region_id,
         'wins', p.pvp_wins,
         'kb', p.kb,
-        'shield', (p.shield_until is not null and p.shield_until > now())
+        'shield', (p.shield_until is not null and p.shield_until > now()),
+        'clan', public.clan_json(p.id)
       )
       from public.profiles p where p.id = uid
     ), '{}'::jsonb),
@@ -709,6 +788,9 @@ begin
         'shield', (p.shield_until is not null and p.shield_until > now()),
         'online', (p.last_seen is not null and p.last_seen > now() - interval '2 minutes'),
         'wins', p.pvp_wins,
+        'clan_tag', (select c.tag from public.clan_members cm
+          join public.clans c on c.id = cm.clan_id
+          where cm.player_id = p.id),
         'admin', coalesce(p.is_admin, false)
       ) order by p.pvp_wins desc, p.updated_at desc)
       from public.profiles p
@@ -734,6 +816,7 @@ begin
       select jsonb_agg(jsonb_build_object(
         'id', c.id, 'region', c.region_id, 'name', c.name,
         'x', c.x, 'y', c.y, 'power', c.power, 'loot', c.loot,
+        'treasury', c.treasury,
         'owner', c.owner,
         'owner_name', coalesce(nullif(p.username, ''), 'Señor sin nombre'),
         'defense', greatest(c.power, coalesce(public.state_power(p.state) * 1.15, 0))
@@ -808,7 +891,10 @@ begin
       from public.road_bends b
     ), '[]'::jsonb),
     'settings', coalesce((
-      select jsonb_build_object('map', coalesce(s.map_image, ''))
+      select jsonb_build_object(
+        'map', coalesce(s.map_image, ''),
+        'world_treasury', s.world_treasury
+      )
       from public.world_settings s where s.id = 1
     ), '{}'::jsonb),
     'events', coalesce((
@@ -1377,6 +1463,9 @@ declare
   merged jsonb;
   tkey text;
   troops_left bigint;
+  loot_amount bigint;
+  loot_net bigint;
+  clan_tax bigint;
   changed integer := 0;
 begin
   for e in
@@ -1395,7 +1484,9 @@ begin
     end if;
 
     begin
-      if e.target_type = 'player' then
+      if e.target_type = 'castle_loot' then
+        res := coalesce(e.result, '{}'::jsonb);
+      elsif e.target_type = 'player' then
         res := public.resolve_rival_battle(
           e.attacker, e.target_id,
           case when e.from_region is distinct from e.to_region then 0.75 else 1 end
@@ -1478,7 +1569,15 @@ begin
         where id = e.attacker;
     end if;
 
-    if troops_left > 0 then
+    if e.target_type = 'castle_loot' then
+      update public.expeditions
+        set status = 'returning',
+            result = res,
+            survivors = '{}'::jsonb,
+            resolved_at = now(),
+            return_at = e.arrive_at + make_interval(secs => e.travel_seconds)
+        where id = e.id;
+    elsif troops_left > 0 then
       update public.expeditions
         set status = 'returning',
             result = res,
@@ -1494,6 +1593,43 @@ begin
             resolved_at = now(),
             return_at = now()
         where id = e.id;
+    end if;
+    changed := changed + 1;
+  end loop;
+
+  for e in
+    select * from public.expeditions
+    where status = 'returning' and target_type = 'castle_loot' and return_at <= now()
+    order by return_at
+    for update skip locked
+  loop
+    loot_amount := coalesce((e.result->>'loot')::bigint, 0);
+    if loot_amount > 0 then
+      perform 1 from public.profiles where id = e.attacker for update;
+      clan_tax := public.clan_collect_tax(e.attacker, loot_amount, 'caravan');
+      loot_net := loot_amount - clan_tax;
+      update public.expeditions
+        set result = coalesce(result, '{}'::jsonb) || jsonb_build_object(
+          'net_loot', loot_net,
+          'clan_tax', clan_tax,
+          'text', 'Caravana recogió ' || loot_net || ' KB de ' || e.target_name || '.' ||
+            case when clan_tax > 0 then ' Impuesto de clan: ' || clan_tax || ' KB.' else '' end
+        )
+        where id = e.id;
+      perform set_config('reinos.kb_ok', '1', true);
+      update public.profiles
+        set kb = kb + loot_net, updated_at = now()
+        where id = e.attacker;
+      insert into public.world_events (attacker, target, winner, loot, text)
+      values (
+        (select coalesce(nullif(p.username, ''), 'Señor sin nombre') from public.profiles p where p.id = e.attacker),
+        e.target_name,
+        'attacker',
+        least(loot_net, 2147483647)::integer,
+        'Caravana de ' || (select coalesce(nullif(p.username, ''), 'un señor') from public.profiles p where p.id = e.attacker)
+          || ' recogió ' || loot_net || ' KB de ' || e.target_name || '.'
+          || case when clan_tax > 0 then ' Impuesto de clan: ' || clan_tax || ' KB.' else '' end
+      );
     end if;
     changed := changed + 1;
   end loop;
@@ -1699,6 +1835,718 @@ $fn$;
 
 grant execute on function public.start_expedition(text, uuid, jsonb) to authenticated;
 
+create or replace function public.start_caravan(p_castle_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  a public.profiles%rowtype;
+  c public.castles%rowtype;
+  path jsonb;
+  dist numeric;
+  move_speed numeric := 1;
+  secs integer;
+  start_at timestamptz := now();
+  row_out public.expeditions%rowtype;
+  hops integer := 0;
+  loot bigint;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+
+  perform public.resolve_expeditions();
+
+  select * into a from public.profiles where id = me for update;
+  if not found then raise exception 'profile missing'; end if;
+  if a.region_id is null or a.x is null or a.y is null then raise exception 'no village'; end if;
+
+  select * into c from public.castles where id = p_castle_id for update;
+  if not found then raise exception 'castle not found'; end if;
+  if c.owner is distinct from me then raise exception 'not yours'; end if;
+  if c.x is null or c.y is null then raise exception 'target not found'; end if;
+  if exists (
+    select 1 from public.regions r
+    where r.id = c.region_id
+      and r.locked
+      and r.id is distinct from a.region_id
+  ) then raise exception 'region locked'; end if;
+
+  if exists (
+    select 1 from public.expeditions e
+    where e.attacker = me and e.status in ('outbound', 'returning')
+  ) then raise exception 'expedition active'; end if;
+
+  loot := coalesce(c.treasury, 0);
+  if loot <= 0 then raise exception 'empty treasury'; end if;
+
+  update public.castles
+    set treasury = 0, updated_at = now()
+    where id = c.id;
+
+  select coalesce(least(10, greatest(0.1, s.movement_speed)), 1)
+    into move_speed
+    from public.world_settings s where s.id = 1;
+  move_speed := coalesce(move_speed, 1);
+
+  hops := public.region_hops(a.region_id, c.region_id);
+  path := public.expedition_path(
+    a.region_id, c.region_id,
+    a.x, a.y,
+    c.x, c.y
+  );
+  dist := public.expedition_distance(path);
+  secs := greatest(10, least(240, round(dist / (45 * move_speed))::integer));
+  if hops > 0 then
+    secs := least(240, greatest(10, round(secs * (1 + 0.5 * hops))::integer));
+  end if;
+
+  insert into public.expeditions (
+    attacker, target_type, target_id, target_name,
+    from_region, to_region, from_x, from_y, to_x, to_y,
+    path, status, depart_at, arrive_at, return_at, travel_seconds, speed, troops, result
+  ) values (
+    me, 'castle_loot', c.id, c.name,
+    a.region_id, c.region_id, a.x, a.y, c.x, c.y,
+    path, 'outbound', start_at,
+    start_at + make_interval(secs => secs),
+    start_at + make_interval(secs => secs * 2),
+    secs, move_speed, null,
+    jsonb_build_object(
+      'win', true,
+      'loot', loot,
+      'text', 'Caravana recogió ' || loot || ' KB de ' || c.name || '.'
+    )
+  )
+  returning * into row_out;
+
+  return jsonb_build_object(
+    'ok', true,
+    'id', row_out.id,
+    'target', c.name,
+    'target_type', 'castle_loot',
+    'loot', loot,
+    'path', row_out.path,
+    'travel_seconds', row_out.travel_seconds,
+    'depart_at', row_out.depart_at,
+    'arrive_at', row_out.arrive_at,
+    'return_at', row_out.return_at,
+    'move_speed', move_speed,
+    'hops', hops,
+    'distance', round(dist, 3)
+  );
+end;
+$fn$;
+
+grant execute on function public.start_caravan(uuid) to authenticated;
+
+-- ============================================================
+-- Clanes: estado, invitaciones, arca y reparto
+-- ============================================================
+
+create or replace function public.clan_json(p_player uuid)
+returns jsonb
+language sql
+security definer
+set search_path = public
+as $fn$
+  select jsonb_build_object(
+    'id', c.id,
+    'name', c.name,
+    'tag', c.tag,
+    'leader', c.leader_id,
+    'treasury', c.treasury,
+    'tax_rate', c.tax_rate,
+    'shares_ready', c.shares_ready,
+    'last_distributed_at', c.last_distributed_at,
+    'members', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', p2.id,
+        'name', coalesce(nullif(p2.username, ''), 'Señor sin nombre'),
+        'role', cm2.role,
+        'share', cm2.share_pct,
+        'contributed', cm2.contributed,
+        'online', (p2.last_seen is not null and p2.last_seen > now() - interval '2 minutes'),
+        'joined_at', cm2.joined_at
+      ) order by case when cm2.role = 'leader' then 0 else 1 end, cm2.joined_at)
+      from public.clan_members cm2
+      join public.profiles p2 on p2.id = cm2.player_id
+      where cm2.clan_id = c.id
+    ), '[]'::jsonb),
+    'ledger', coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'id', l.id,
+        'at', l.created_at,
+        'kind', l.kind,
+        'amount', l.amount,
+        'player_id', l.player_id,
+        'player_name', coalesce(nullif(p3.username, ''), 'Señor sin nombre'),
+        'detail', l.detail
+      ) order by l.created_at desc)
+      from (
+        select * from public.clan_ledger
+        where clan_id = c.id
+        order by created_at desc
+        limit 20
+      ) l
+      left join public.profiles p3 on p3.id = l.player_id
+    ), '[]'::jsonb),
+    'invites', case when c.leader_id = p_player then coalesce((
+      select jsonb_agg(jsonb_build_object(
+        'code', i.code,
+        'uses_left', i.uses_left,
+        'expires_at', i.expires_at
+      ) order by i.created_at desc)
+      from public.clan_invites i
+      where i.clan_id = c.id and i.expires_at > now() and i.uses_left > 0
+    ), '[]'::jsonb) else '[]'::jsonb end
+  )
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = p_player;
+$fn$;
+revoke all on function public.clan_json(uuid) from public, anon, authenticated;
+
+create or replace function public.clan_state()
+returns jsonb
+language sql
+security definer
+set search_path = public
+as $fn$
+  select public.clan_json(auth.uid());
+$fn$;
+grant execute on function public.clan_state() to authenticated;
+
+create or replace function public.clan_create(p_name text, p_tag text, p_tax_rate integer default 20)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_name text;
+  v_tag text;
+  v_clan uuid;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  v_name := btrim(coalesce(p_name, ''));
+  v_tag := upper(btrim(coalesce(p_tag, '')));
+  if char_length(v_name) < 3 or char_length(v_name) > 24 then raise exception 'invalid name'; end if;
+  if v_tag !~ '^[A-Z0-9]{3,4}$' then raise exception 'invalid tag'; end if;
+  if p_tax_rate is null or p_tax_rate < 0 or p_tax_rate > 100 then raise exception 'invalid tax'; end if;
+  if exists (select 1 from public.clan_members where player_id = me) then raise exception 'already in clan'; end if;
+  if exists (select 1 from public.clans where lower(name) = lower(v_name)) then raise exception 'name taken'; end if;
+  if exists (select 1 from public.clans where upper(tag) = v_tag) then raise exception 'tag taken'; end if;
+
+  begin
+    insert into public.clans (name, tag, leader_id, tax_rate)
+    values (v_name, v_tag, me, p_tax_rate)
+    returning id into v_clan;
+  exception when unique_violation then
+    raise exception 'name or tag taken';
+  end;
+
+  insert into public.clan_members (player_id, clan_id, role, share_pct)
+  values (me, v_clan, 'leader', 100);
+  insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+  values (v_clan, me, 'create', 0, 'Clan fundado');
+  return public.clan_json(me);
+end;
+$fn$;
+grant execute on function public.clan_create(text, text, integer) to authenticated;
+
+create or replace function public.clan_invite()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  v_code text;
+  v_expires timestamptz;
+  i integer;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  select c.id into v_clan
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = me and c.leader_id = me;
+  if v_clan is null then raise exception 'not leader'; end if;
+
+  for i in 1..10 loop
+    v_code := upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 6));
+    exit when not exists (select 1 from public.clan_invites where code = v_code);
+  end loop;
+  if v_code is null or exists (select 1 from public.clan_invites where code = v_code) then
+    raise exception 'could not create code';
+  end if;
+
+  v_expires := now() + interval '48 hours';
+  insert into public.clan_invites (code, clan_id, created_by, uses_left, expires_at)
+  values (v_code, v_clan, me, 5, v_expires);
+  return jsonb_build_object('ok', true, 'code', v_code, 'expires_at', v_expires);
+end;
+$fn$;
+grant execute on function public.clan_invite() to authenticated;
+
+create or replace function public.clan_accept(p_code text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  inv public.clan_invites%rowtype;
+  c public.clans%rowtype;
+  v_count integer;
+  v_name text;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  if exists (select 1 from public.clan_members where player_id = me) then raise exception 'already in clan'; end if;
+
+  select * into inv from public.clan_invites
+  where code = upper(btrim(coalesce(p_code, '')))
+  for update;
+  if not found then raise exception 'invalid code'; end if;
+  if inv.expires_at <= now() or inv.uses_left <= 0 then raise exception 'expired code'; end if;
+
+  select * into c from public.clans where id = inv.clan_id for update;
+  if not found then raise exception 'clan not found'; end if;
+  select count(*) into v_count from public.clan_members where clan_id = c.id;
+  if v_count >= 5 then raise exception 'clan full'; end if;
+
+  insert into public.clan_members (player_id, clan_id, role, share_pct)
+  values (me, c.id, 'member', 0);
+  update public.clans set shares_ready = false, updated_at = now() where id = c.id;
+
+  update public.clan_invites set uses_left = uses_left - 1 where code = inv.code;
+  if inv.uses_left - 1 <= 0 then
+    delete from public.clan_invites where code = inv.code;
+  end if;
+
+  select username into v_name from public.profiles where id = me;
+  insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+  values (c.id, me, 'join', 0, coalesce(nullif(v_name, ''), 'Señor sin nombre') || ' entró al clan');
+  return public.clan_json(me);
+end;
+$fn$;
+grant execute on function public.clan_accept(text) to authenticated;
+
+create or replace function public.clan_leave()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  v_role text;
+  v_name text;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  select clan_id, role into v_clan, v_role from public.clan_members where player_id = me;
+  if v_clan is null then raise exception 'no clan'; end if;
+  if v_role = 'leader' then raise exception 'leader must transfer'; end if;
+  perform 1 from public.clans where id = v_clan for update;
+
+  delete from public.clan_members where player_id = me;
+  if not found then raise exception 'no clan'; end if;
+  update public.clans set shares_ready = false, updated_at = now() where id = v_clan;
+  select username into v_name from public.profiles where id = me;
+  insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+  values (v_clan, me, 'leave', 0, coalesce(nullif(v_name, ''), 'Señor sin nombre') || ' salió del clan');
+  return jsonb_build_object('ok', true);
+end;
+$fn$;
+grant execute on function public.clan_leave() to authenticated;
+
+create or replace function public.clan_kick(p_player uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  v_leader uuid;
+  v_name text;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  select c.id, c.leader_id into v_clan, v_leader
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = me;
+  if v_clan is null then raise exception 'no clan'; end if;
+  if v_leader <> me then raise exception 'not leader'; end if;
+  if p_player = me then raise exception 'cannot kick leader'; end if;
+  perform 1 from public.clans where id = v_clan for update;
+
+  delete from public.clan_members where player_id = p_player and clan_id = v_clan;
+  if not found then raise exception 'not member'; end if;
+  update public.clans set shares_ready = false, updated_at = now() where id = v_clan;
+
+  select username into v_name from public.profiles where id = p_player;
+  insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+  values (v_clan, p_player, 'kick', 0, coalesce(nullif(v_name, ''), 'Señor sin nombre') || ' fue expulsado');
+  return jsonb_build_object('ok', true);
+end;
+$fn$;
+grant execute on function public.clan_kick(uuid) to authenticated;
+
+create or replace function public.clan_transfer_leader(p_player uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  v_leader uuid;
+  v_name text;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  select c.id, c.leader_id into v_clan, v_leader
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = me;
+  if v_clan is null then raise exception 'no clan'; end if;
+  if v_leader <> me then raise exception 'not leader'; end if;
+  if p_player is null or p_player = me then raise exception 'invalid member'; end if;
+  if not exists (select 1 from public.clan_members where player_id = p_player and clan_id = v_clan) then
+    raise exception 'not member';
+  end if;
+
+  update public.clans set leader_id = p_player, updated_at = now() where id = v_clan;
+  update public.clan_members set role = 'member' where player_id = me and clan_id = v_clan;
+  update public.clan_members set role = 'leader' where player_id = p_player and clan_id = v_clan;
+
+  select username into v_name from public.profiles where id = p_player;
+  insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+  values (v_clan, p_player, 'leader', 0, coalesce(nullif(v_name, ''), 'Señor sin nombre') || ' es el nuevo líder');
+  return public.clan_json(me);
+end;
+$fn$;
+grant execute on function public.clan_transfer_leader(uuid) to authenticated;
+
+create or replace function public.clan_set_tax(p_rate integer)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  if p_rate is null or p_rate < 0 or p_rate > 100 then raise exception 'invalid tax'; end if;
+  select c.id into v_clan
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = me and c.leader_id = me;
+  if v_clan is null then raise exception 'not leader'; end if;
+  update public.clans set tax_rate = p_rate, updated_at = now() where id = v_clan;
+  return public.clan_json(me);
+end;
+$fn$;
+grant execute on function public.clan_set_tax(integer) to authenticated;
+
+create or replace function public.clan_set_shares(p_shares jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  v_member record;
+  v_raw text;
+  v_pct integer;
+  v_sum integer := 0;
+  v_count integer;
+  v_keys integer;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  select c.id into v_clan
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = me and c.leader_id = me;
+  if v_clan is null then raise exception 'not leader'; end if;
+  if p_shares is null or jsonb_typeof(p_shares) <> 'object' then raise exception 'invalid shares'; end if;
+  perform 1 from public.clans where id = v_clan for update;
+
+  select count(*) into v_count from public.clan_members where clan_id = v_clan;
+  select count(*) into v_keys from jsonb_object_keys(p_shares);
+  if v_keys <> v_count then raise exception 'invalid shares'; end if;
+
+  for v_member in
+    select player_id from public.clan_members where clan_id = v_clan
+  loop
+    v_raw := p_shares ->> (v_member.player_id::text);
+    if v_raw is null or v_raw !~ '^[0-9]+$' then raise exception 'invalid shares'; end if;
+    v_pct := v_raw::integer;
+    if v_pct < 0 or v_pct > 100 then raise exception 'invalid shares'; end if;
+    v_sum := v_sum + v_pct;
+    update public.clan_members set share_pct = v_pct
+      where player_id = v_member.player_id and clan_id = v_clan;
+  end loop;
+
+  if v_sum <> 100 then raise exception 'shares must total 100'; end if;
+  update public.clans set shares_ready = true, updated_at = now() where id = v_clan;
+  return public.clan_json(me);
+end;
+$fn$;
+grant execute on function public.clan_set_shares(jsonb) to authenticated;
+
+create or replace function public.clan_donate(p_amount bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  a public.profiles%rowtype;
+  c public.clans%rowtype;
+  v_name text;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  if p_amount is null or p_amount <= 0 then raise exception 'invalid amount'; end if;
+  select clan_id into v_clan from public.clan_members where player_id = me;
+  if v_clan is null then raise exception 'no clan'; end if;
+
+  select * into a from public.profiles where id = me for update;
+  if not found then raise exception 'profile missing'; end if;
+  if a.kb < p_amount then raise exception 'not enough kb'; end if;
+  select * into c from public.clans where id = v_clan for update;
+  if not found then raise exception 'no clan'; end if;
+
+  perform set_config('reinos.kb_ok', '1', true);
+  update public.profiles set kb = kb - p_amount, updated_at = now() where id = me;
+  update public.clans set treasury = treasury + p_amount, updated_at = now() where id = v_clan;
+  update public.clan_members set contributed = contributed + p_amount where player_id = me;
+
+  select username into v_name from public.profiles where id = me;
+  insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+  values (v_clan, me, 'donation', p_amount, coalesce(nullif(v_name, ''), 'Señor sin nombre') || ' donó al arca');
+  return public.clan_json(me);
+end;
+$fn$;
+grant execute on function public.clan_donate(bigint) to authenticated;
+
+create or replace function public.clan_collect_tax(p_player uuid, p_amount bigint, p_kind text default 'tax')
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_clan uuid;
+  v_rate integer;
+  v_cut bigint;
+begin
+  if p_player is null or p_amount is null or p_amount <= 0 then return 0; end if;
+  select cm.clan_id, c.tax_rate into v_clan, v_rate
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = p_player
+  for update of c;
+  if not found or v_rate <= 0 then return 0; end if;
+
+  v_cut := floor(p_amount::numeric * v_rate / 100.0)::bigint;
+  if v_cut <= 0 then return 0; end if;
+
+  update public.clans set treasury = treasury + v_cut, updated_at = now() where id = v_clan;
+  update public.clan_members set contributed = contributed + v_cut where player_id = p_player;
+  insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+  values (
+    v_clan, p_player, coalesce(nullif(p_kind, ''), 'tax'), v_cut,
+    case
+      when p_kind = 'market' then 'Impuesto de venta en el mercado'
+      when p_kind = 'caravan' then 'Impuesto de caravana'
+      else 'Impuesto de clan'
+    end
+  );
+  return v_cut;
+end;
+$fn$;
+revoke all on function public.clan_collect_tax(uuid, bigint, text) from public, anon, authenticated;
+
+create or replace function public.clan_distribute()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  v_leader uuid;
+  v_clanrow public.clans%rowtype;
+  v_p uuid;
+  v_total bigint;
+  v_sum integer;
+  v_paid bigint := 0;
+  v_remainder bigint;
+  v_base bigint;
+  v_amount bigint;
+  v_shares jsonb := '{}'::jsonb;
+  v_member record;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  select c.id, c.leader_id into v_clan, v_leader
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = me;
+  if v_clan is null then raise exception 'no clan'; end if;
+  if v_leader <> me then raise exception 'not leader'; end if;
+
+  for v_p in select player_id from public.clan_members where clan_id = v_clan order by player_id loop
+    perform 1 from public.profiles where id = v_p for update;
+  end loop;
+
+  select * into v_clanrow from public.clans where id = v_clan for update;
+  if not found then raise exception 'no clan'; end if;
+  if v_clanrow.last_distributed_at is not null
+     and v_clanrow.last_distributed_at > now() - interval '24 hours' then
+    raise exception 'cooldown';
+  end if;
+
+  perform 1 from public.clan_members where clan_id = v_clan for update;
+  v_total := v_clanrow.treasury;
+  if v_total < 100 then raise exception 'treasury too low'; end if;
+
+  select coalesce(sum(share_pct), 0) into v_sum from public.clan_members where clan_id = v_clan;
+  if v_sum <> 100 then raise exception 'shares must total 100'; end if;
+  if not v_clanrow.shares_ready then raise exception 'shares not ready'; end if;
+
+  for v_member in
+    select player_id, share_pct from public.clan_members where clan_id = v_clan
+  loop
+    v_paid := v_paid + floor(v_total::numeric * v_member.share_pct / 100.0)::bigint;
+  end loop;
+  v_remainder := v_total - v_paid;
+
+  perform set_config('reinos.kb_ok', '1', true);
+  for v_member in
+    select player_id, share_pct from public.clan_members where clan_id = v_clan
+  loop
+    v_base := floor(v_total::numeric * v_member.share_pct / 100.0)::bigint;
+    v_amount := v_base + case when v_member.player_id = v_leader then v_remainder else 0 end;
+    if v_amount > 0 then
+      update public.profiles set kb = kb + v_amount, updated_at = now()
+        where id = v_member.player_id;
+    end if;
+    v_shares := v_shares || jsonb_build_object(v_member.player_id::text, v_member.share_pct);
+    insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+    values (v_clan, v_member.player_id, 'distribution', v_amount, 'Reparto del arca del clan');
+  end loop;
+
+  update public.clans
+    set treasury = 0, last_distributed_at = now(), updated_at = now()
+    where id = v_clan;
+  insert into public.clan_distributions (clan_id, total, shares)
+  values (v_clan, v_total, v_shares);
+  return jsonb_build_object('ok', true, 'total', v_total, 'shares', v_shares);
+end;
+$fn$;
+grant execute on function public.clan_distribute() to authenticated;
+
+create or replace function public.clan_disband()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  v_leader uuid;
+  v_clanrow public.clans%rowtype;
+  v_p uuid;
+  v_total bigint;
+  v_count integer;
+  v_sum integer;
+  v_paid bigint := 0;
+  v_remainder bigint;
+  v_base bigint;
+  v_amount bigint;
+  v_shares jsonb := '{}'::jsonb;
+  v_member record;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  select c.id, c.leader_id into v_clan, v_leader
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = me;
+  if v_clan is null then raise exception 'no clan'; end if;
+  if v_leader <> me then raise exception 'not leader'; end if;
+
+  for v_p in select player_id from public.clan_members where clan_id = v_clan order by player_id loop
+    perform 1 from public.profiles where id = v_p for update;
+  end loop;
+
+  select * into v_clanrow from public.clans where id = v_clan for update;
+  if not found then raise exception 'no clan'; end if;
+  perform 1 from public.clan_members where clan_id = v_clan for update;
+  v_total := v_clanrow.treasury;
+  select count(*), coalesce(sum(share_pct), 0) into v_count, v_sum
+    from public.clan_members where clan_id = v_clan;
+
+  if v_total > 0 and v_count > 0 then
+    perform set_config('reinos.kb_ok', '1', true);
+    if v_sum = 100 then
+      for v_member in
+        select player_id, share_pct from public.clan_members where clan_id = v_clan
+      loop
+        v_paid := v_paid + floor(v_total::numeric * v_member.share_pct / 100.0)::bigint;
+      end loop;
+      v_remainder := v_total - v_paid;
+      for v_member in
+        select player_id, share_pct from public.clan_members where clan_id = v_clan
+      loop
+        v_base := floor(v_total::numeric * v_member.share_pct / 100.0)::bigint;
+        v_amount := v_base + case when v_member.player_id = v_leader then v_remainder else 0 end;
+        if v_amount > 0 then
+          update public.profiles set kb = kb + v_amount, updated_at = now()
+            where id = v_member.player_id;
+        end if;
+        v_shares := v_shares || jsonb_build_object(v_member.player_id::text, v_amount);
+      end loop;
+    else
+      v_base := v_total / v_count;
+      v_remainder := v_total - v_base * v_count;
+      for v_member in
+        select player_id from public.clan_members where clan_id = v_clan
+      loop
+        v_amount := v_base + case when v_member.player_id = v_leader then v_remainder else 0 end;
+        if v_amount > 0 then
+          update public.profiles set kb = kb + v_amount, updated_at = now()
+            where id = v_member.player_id;
+        end if;
+        v_shares := v_shares || jsonb_build_object(v_member.player_id::text, v_amount);
+      end loop;
+    end if;
+    insert into public.clan_distributions (clan_id, total, shares)
+    values (v_clan, v_total, v_shares);
+  end if;
+
+  delete from public.clans where id = v_clan;
+  return jsonb_build_object('ok', true, 'total', v_total);
+end;
+$fn$;
+grant execute on function public.clan_disband() to authenticated;
+
 -- ============================================================
 -- Mercado entre jugadores (trueque de recursos y tropas por KB)
 -- ============================================================
@@ -1720,6 +2568,13 @@ alter table public.market_orders add constraint market_orders_side_check check (
 alter table public.market_orders drop constraint if exists market_orders_asset_check;
 alter table public.market_orders add constraint market_orders_asset_check
   check (asset in ('oro', 'madera', 'comida', 'piedra', 'lanceros', 'arqueros', 'jinetes', 'espadachines', 'guardianes', 'jinetes_arqueros', 'catapultas', 'magos', 'asesinos', 'ballesteros', 'piqueros', 'lobos_guerra', 'elefantes', 'nigromantes', 'dragones', 'honderos', 'arquebuseros', 'camellos', 'osos_guerra', 'sacerdotes', 'titanes'));
+
+alter table public.market_orders add column if not exists price_total boolean not null default false;
+update public.market_orders
+  set price = price * case when remaining > 0 then remaining else qty end,
+      price_total = true
+  where not price_total;
+alter table public.market_orders alter column price_total set default true;
 
 create index if not exists market_orders_active_idx on public.market_orders (created_at desc) where remaining > 0;
 
@@ -1841,17 +2696,19 @@ begin
   new_state := public.market_take(a.state, p_asset, p_qty);
   update public.profiles set state = new_state, updated_at = now() where id = me;
 
-  insert into public.market_orders (player, side, asset, qty, remaining, price)
-  values (me, p_side, p_asset, p_qty, p_qty, p_price)
+  insert into public.market_orders (player, side, asset, qty, remaining, price, price_total)
+  values (me, p_side, p_asset, p_qty, p_qty, p_price, true)
   returning id into oid;
 
-  return jsonb_build_object('ok', true, 'id', oid);
+  return jsonb_build_object(
+    'ok', true, 'id', oid, 'qty', p_qty, 'price', p_price, 'asset', p_asset
+  );
 end;
 $fn$;
 
 grant execute on function public.market_post(text, text, bigint, bigint) to authenticated;
 
-create or replace function public.market_fill(p_order_id uuid, p_qty bigint)
+create or replace function public.market_fill(p_order_id uuid, p_qty bigint default null)
 returns jsonb
 language plpgsql
 security definer
@@ -1868,18 +2725,31 @@ declare
   seller_state jsonb;
   seller_id uuid;
   buyer_id uuid;
+  seller_cut bigint;
+  seller_net bigint;
+  clan_tax bigint := 0;
+  admin_cut bigint;
+  castle_pool bigint;
+  open_count integer;
+  share bigint;
+  remainder bigint;
+  admin_id uuid;
+  castle_row record;
+  world_fund bigint := 0;
+  take_extra boolean := true;
 begin
   if me is null then raise exception 'not authenticated'; end if;
-  if p_qty is null or p_qty <= 0 then raise exception 'invalid qty'; end if;
+  if p_qty is not null and p_qty <= 0 then raise exception 'invalid qty'; end if;
 
   select * into o from public.market_orders where id = p_order_id for update;
   if not found then raise exception 'order not found'; end if;
   if o.remaining <= 0 then raise exception 'closed'; end if;
   if o.side <> 'sell' then raise exception 'only sell orders'; end if;
   if o.player = me then raise exception 'own order'; end if;
+  if p_qty is not null and p_qty <> o.remaining then raise exception 'full offer only'; end if;
 
-  fill := least(p_qty, o.remaining);
-  cost := fill * o.price;
+  fill := o.remaining;
+  cost := o.price;
 
   if o.side = 'sell' then
     buyer_id := me;
@@ -1895,10 +2765,57 @@ begin
 
   if o.side = 'sell' then
     if buyer.kb < cost then raise exception 'not enough kb'; end if;
+    seller_cut := (cost * 80) / 100;
+    admin_cut := (cost * 5) / 100;
+    castle_pool := cost - seller_cut - admin_cut;
+
+    select id into admin_id from public.profiles where is_admin order by id limit 1;
+    if admin_id is null then
+      castle_pool := castle_pool + admin_cut;
+      admin_cut := 0;
+    end if;
+
+    select count(*) into open_count
+      from public.castles c
+      join public.regions r on r.id = c.region_id
+      where not r.locked;
+
+    if castle_pool > 0 then
+      if open_count > 0 then
+        share := castle_pool / open_count;
+        remainder := castle_pool - share * open_count;
+        for castle_row in
+          select c.id
+            from public.castles c
+            join public.regions r on r.id = c.region_id
+            where not r.locked
+            order by c.id
+        loop
+          update public.castles
+            set treasury = treasury + share + case when take_extra then remainder else 0 end,
+                updated_at = now()
+            where id = castle_row.id;
+          take_extra := false;
+        end loop;
+      else
+        world_fund := castle_pool;
+        update public.world_settings
+          set world_treasury = world_treasury + castle_pool, updated_at = now()
+          where id = 1;
+        castle_pool := 0;
+      end if;
+    end if;
+
+    clan_tax := public.clan_collect_tax(seller_id, seller_cut, 'market');
+    seller_net := seller_cut - clan_tax;
+
     buyer_state := public.market_give(buyer.state, o.asset, fill, public.state_storage(buyer.state));
     perform set_config('reinos.kb_ok', '1', true);
     update public.profiles set state = buyer_state, kb = kb - cost, updated_at = now() where id = buyer_id;
-    update public.profiles set kb = kb + cost, updated_at = now() where id = seller_id;
+    update public.profiles set kb = kb + seller_net, updated_at = now() where id = seller_id;
+    if admin_id is not null and admin_cut > 0 then
+      update public.profiles set kb = kb + admin_cut, updated_at = now() where id = admin_id;
+    end if;
   else
     seller_state := public.market_take(seller.state, o.asset, fill);
     buyer_state := public.market_give(buyer.state, o.asset, fill, public.state_storage(buyer.state));
@@ -1914,6 +2831,9 @@ begin
   return jsonb_build_object(
     'ok', true, 'qty', fill, 'price', o.price, 'total', cost,
     'asset', o.asset, 'side', o.side,
+    'seller_cut', seller_cut, 'seller_net', seller_net, 'clan_tax', clan_tax,
+    'admin_cut', admin_cut, 'castle_pool', castle_pool,
+    'world_fund', world_fund, 'open_castles', open_count,
     'buyer', coalesce(nullif(buyer.username, ''), 'Señor sin nombre'),
     'seller', coalesce(nullif(seller.username, ''), 'Señor sin nombre')
   );

@@ -437,6 +437,23 @@
     return Number(value || 0).toLocaleString("es-ES", { maximumFractionDigits: 0 });
   }
 
+  function resourceTotal(resources) {
+    var total = 0;
+    RESOURCES.forEach(function (res) {
+      total += Math.max(0, Math.floor(Number(resources && resources[res]) || 0));
+    });
+    return total;
+  }
+
+  function resourceSummary(resources) {
+    var parts = [];
+    RESOURCES.forEach(function (res) {
+      var value = Math.max(0, Math.floor(Number(resources && resources[res]) || 0));
+      if (value > 0) parts.push(num(value) + " " + RES_LABEL[res].toLowerCase());
+    });
+    return parts.join(" · ");
+  }
+
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
@@ -1740,6 +1757,10 @@
   function clanMessageError(message) {
     if (message.indexOf("already in clan") !== -1) return "Ya perteneces a un clan.";
     if (message.indexOf("not leader") !== -1) return "Solo el líder puede hacer eso.";
+    if (message.indexOf("castle has no clan") !== -1) return "Ese castillo no tiene clan: su rey debe fundar o unirse a uno.";
+    if (message.indexOf("not your clan") !== -1) return "Solo los miembros del clan del rey pueden extraer recursos.";
+    if (message.indexOf("empty resources") !== -1) return "El arca no tiene recursos para repartir.";
+    if (message.indexOf("resources remain") !== -1) return "Reparte los recursos del arca antes de disolver el clan.";
     if (message.indexOf("clan full") !== -1) return "El clan está lleno (máximo 5 jugadores).";
     if (message.indexOf("invalid code") !== -1) return "El código de invitación no es válido.";
     if (message.indexOf("expired code") !== -1) return "Ese código de invitación caducó.";
@@ -2015,6 +2036,51 @@
       .catch(function () {
         pvpBusy = false;
         pvpResult = { ok: false, text: "No se pudo enviar la caravana." };
+        renderGame();
+      });
+  }
+
+  function startResourceCaravan(castleId) {
+    if (!isCloud() || pvpBusy) return;
+    if (!castleId) return;
+    pvpBusy = true;
+    pvpResult = null;
+    renderGame();
+    api("/rest/v1/rpc/start_castle_resource_caravan", {
+      method: "POST",
+      token: session.token,
+      body: { p_castle_id: castleId },
+    })
+      .then(function (result) {
+        pvpBusy = false;
+        if (!result.ok) {
+          var message = cloudErrorMessage(result);
+          if (message.indexOf("empty resources") !== -1) message = "Ese castillo no tiene recursos que extraer.";
+          else if (message.indexOf("castle has no clan") !== -1) message = "Ese castillo no tiene clan.";
+          else if (message.indexOf("not your clan") !== -1) message = "Solo el clan del rey puede extraer recursos.";
+          else if (message.indexOf("expedition active") !== -1) message = "Ya tienes una marcha o caravana en camino.";
+          else if (message.indexOf("locked") !== -1) message = "Esa zona está bloqueada por el administrador.";
+          else if (message.indexOf("no village") !== -1) message = "Tu aldea aún no tiene posición en el mundo.";
+          else if (message.indexOf("not found") !== -1) message = "Ese castillo ya no existe.";
+          pvpResult = { ok: false, text: message };
+          renderGame();
+          return;
+        }
+        var data = result.data || {};
+        pvpResult = {
+          ok: true,
+          win: true,
+          text: "Caravana de recursos enviada a " + (data.target || "tu castillo") + ": " +
+            (resourceSummary(data.resources) || "sin recursos") + ". Vuelta en " +
+            num(data.travel_seconds || 0) + " s.",
+        };
+        return refreshOwnProfile().then(syncWorld).then(function () {
+          renderGame();
+        });
+      })
+      .catch(function () {
+        pvpBusy = false;
+        pvpResult = { ok: false, text: "No se pudo enviar la caravana de recursos." };
         renderGame();
       });
   }
@@ -2621,6 +2687,7 @@
     if (expedition.target_type === "npc") return "n:" + expedition.target_id;
     if (expedition.target_type === "castle") return "c:" + expedition.target_id;
     if (expedition.target_type === "castle_loot") return "c:" + expedition.target_id;
+    if (expedition.target_type === "castle_resources") return "c:" + expedition.target_id;
     return "p:" + expedition.target_id;
   }
 
@@ -3364,6 +3431,8 @@
       if (String(member.id) === String(clan.leader)) leaderName = member.name;
     });
     var treasury = Number(clan.treasury || 0);
+    var clanResources = clan.resources || {};
+    var clanResourceTotal = resourceTotal(clanResources);
     var sharesReady = clan.shares_ready !== false;
     var cooldownLeft = 0;
     if (clan.last_distributed_at) {
@@ -3432,7 +3501,7 @@
           var labels = {
             create: "Creación", join: "Ingreso", leave: "Salida", kick: "Expulsión",
             leader: "Liderazgo", tax: "Impuesto", market: "Mercado", caravan: "Caravana",
-            donation: "Donación", distribution: "Reparto",
+            donation: "Donación", distribution: "Reparto", resources: "Recursos",
           };
           var amount = Number(entry.amount || 0);
           return (
@@ -3471,10 +3540,16 @@
               (clanBusy || !sharesReady ? " disabled" : "") + ">" +
               (clanBusy ? "Procesando…" : "Repartir arca") +
             "</button>" +
+            '<button class="btn" data-clan-distribute-resources="1"' +
+              (clanBusy || !sharesReady || clanResourceTotal <= 0 ? " disabled" : "") + ">" +
+              (clanBusy ? "Procesando…" : "Repartir recursos") +
+            "</button>" +
             '<button class="btn danger" data-clan-disband="1"' + (clanBusy ? " disabled" : "") + ">Disolver clan</button>" +
           "</div>" +
+          '<div class="market-note">Los recursos se reparten con los mismos porcentajes del clan y sin espera. ' +
+            "Si un almacén está lleno, su parte queda en el arca.</div>" +
           (cooldownLeft > 0
-            ? '<div class="market-note">Próximo reparto disponible en ' +
+            ? '<div class="market-note">Próximo reparto de KB disponible en ' +
               Math.ceil(cooldownLeft / 3600000) + " h.</div>"
             : "") +
         "</div>"
@@ -3491,6 +3566,7 @@
               members.length + "/5 miembros</span>" +
           "</div>" +
           '<div class="clan-fund"><span>Arca del clan</span><b>' + num(treasury) + " KB</b>" +
+            "<span>Recursos: " + (clanResourceTotal > 0 ? escapeHtml(resourceSummary(clanResources)) : "vacío") + "</span>" +
             '<span>Impuesto ' + Number(clan.tax_rate || 0) + "%</span></div>" +
         "</div>" +
         '<div class="panel-body">' +
@@ -3500,6 +3576,12 @@
             '<div><b>' + sharesTotal + '%</b><span>reparto asignado</span></div>' +
             '<div><b>' + Number(clan.tax_rate || 0) + '%</b><span>impuesto</span></div>' +
           "</div>" +
+          '<div class="clan-resource-grid">' +
+            RESOURCES.map(function (res) {
+              return '<div class="clan-resource"><span>' + RES_ICON[res] + " " + RES_LABEL[res] +
+                "</span><b>" + num(clanResources[res] || 0) + "</b></div>";
+            }).join("") +
+          "</div>" +
           '<div class="clan-section"><div class="clan-section-head"><h3>Miembros</h3></div>' +
             '<div class="clan-members">' + memberHtml + "</div>" +
           "</div>" +
@@ -3507,7 +3589,7 @@
           inviteHtml +
           '<div class="clan-section">' +
             '<div class="clan-section-head"><h3>Arca</h3>' +
-              '<span class="hint">Solo mercado y caravanas generan impuesto</span></div>' +
+              '<span class="hint">Las caravanas de castillo traen recursos, no KB</span></div>' +
             '<form id="clan-donate-form" class="market-form clan-inline-form">' +
               '<label>Donar KB al arca<input id="clan-donate-input" type="number" min="1" step="1" value="100" /></label>' +
               '<button class="btn" type="submit">Donar</button>' +
@@ -3853,6 +3935,16 @@
       var castleLoot = Number(castleTarget.loot) || 0;
       var castleShare = Math.round(castleLoot / 4);
       var castleTreasury = Number(castleTarget.treasury) || 0;
+      var castleResources = {
+        oro: Number(castleTarget.res_oro) || 0,
+        madera: Number(castleTarget.res_madera) || 0,
+        comida: Number(castleTarget.res_comida) || 0,
+        piedra: Number(castleTarget.res_piedra) || 0,
+      };
+      var castleResourceTotal = resourceTotal(castleResources);
+      var myClanId = world.me && world.me.clan && world.me.clan.id ? String(world.me.clan.id) : "";
+      var castleClanId = castleTarget.clan_id ? String(castleTarget.clan_id) : "";
+      var castleMyClan = !!castleClanId && castleClanId === myClanId;
       var castleInv = invasionInfo(castleTarget.region);
       var castleOdds = Math.round(clamp((sendPower * castleInv.mult / Math.max(1, castleDefense)) * 100, 1, 99));
       var castleMine = !!castleTarget.owner && String(castleTarget.owner) === String(session && session.userId);
@@ -3867,10 +3959,20 @@
             "<span>Botín al conquistarlo: <b>" + num(castleLoot) + "</b> recursos (" +
               num(castleShare) + " de oro, madera, comida y piedra).</span>" +
             "<span>Botín del mercado: <b>" + num(castleTreasury) + "</b> KB acumulados.</span>" +
+            "<span>Recursos del castillo: <b>" +
+              (castleResourceTotal > 0 ? escapeHtml(resourceSummary(castleResources)) : "vacíos") +
+              "</b> · 15/min por recurso · tope 10.000.</span>" +
+            "<span>Clan que lo explota: <b>" +
+              (castleTarget.clan_tag
+                ? "[" + escapeHtml(String(castleTarget.clan_tag)) + "]"
+                : "sin clan") + "</b></span>" +
             "<span>Éxito estimado: <b>" + num(castleOdds) + "%</b></span>" +
             invasionLines(castleInv) +
             (castleMine ? '<span class="pvp-warn">Este castillo es tuyo: eres el rey. El 15% de cada venta del mercado se acumula aquí.</span>' : "") +
-            (myMarch ? '<span class="pvp-warn">Ya tienes un ejército en camino.</span>' : "") +
+            (castleMine && !castleTarget.clan_tag
+              ? '<span class="pvp-warn">Este castillo no tiene clan: funda uno o únete para extraer recursos.</span>'
+              : "") +
+            (myMarch ? '<span class="pvp-warn">Ya tienes una marcha o caravana en camino.</span>' : "") +
             (armyCount(state) <= 0 && !castleMine ? '<span class="pvp-warn">No tienes tropas: entrena en el Cuartel.</span>' : "") +
             (!castleMine && armyCount(state) > 0 && sendTotal <= 0 ? '<span class="pvp-warn">Selecciona al menos una tropa para enviar.</span>' : "") +
           "</div>" +
@@ -3884,6 +3986,15 @@
                 (pvpBusy || myMarch || castleTreasury <= 0 ? " disabled" : "") + ">" +
                 (myMarch ? "Caravana en curso" : pvpBusy ? "Preparando…" :
                   castleTreasury > 0 ? "Enviar caravana (" + num(castleTreasury) + " KB)" : "Sin botín") +
+                "</button>"
+              : "") +
+            (castleMyClan
+              ? '<button class="btn" id="castle-resources-btn"' +
+                (pvpBusy || myMarch || castleResourceTotal <= 0 ? " disabled" : "") + ">" +
+                (myMarch ? "Caravana en curso" : pvpBusy ? "Preparando…" :
+                  castleResourceTotal > 0
+                    ? "Enviar caravana de recursos (" + num(castleResourceTotal) + ")"
+                    : "Sin recursos") +
                 "</button>"
               : "") +
             '<button class="btn" id="castle-cancel-btn">Cancelar</button>' +
@@ -3955,17 +4066,27 @@
     if (myMarch) {
       var marchRegion = regionById(myMarch.to_region);
       var outboundMarch = myMarch.status === "outbound";
-      var caravanMarch = myMarch.target_type === "castle_loot";
+      var caravanKb = myMarch.target_type === "castle_loot";
+      var caravanResources = myMarch.target_type === "castle_resources";
+      var caravanMarch = caravanKb || caravanResources;
+      var marchResources = caravanResources && myMarch.result ? myMarch.result.resources : null;
       var eta = secondsUntil(outboundMarch ? myMarch.arrive_at : myMarch.return_at);
       marchCard =
         '<div class="pvp-card march-card">' +
-          '<div class="pvp-info"><b>' + (caravanMarch ? "Caravana del rey" : "Marcha de tu ejército") + "</b>" +
+          '<div class="pvp-info"><b>' +
+            (caravanResources ? "Caravana de recursos" : caravanKb ? "Caravana del rey" : "Marcha de tu ejército") +
+            "</b>" +
             "<span>Destino: " + escapeHtml(myMarch.target_name || "objetivo") +
               (marchRegion ? " · " + escapeHtml(marchRegion.name) : "") + "</span>" +
-            "<span>" + (caravanMarch
-              ? (outboundMarch ? "En camino a recoger el botín." : "Regresando con el botín.")
-              : (outboundMarch ? "En camino; combate al llegar." : "Regresando de la batalla.")) +
+            "<span>" + (caravanResources
+              ? (outboundMarch ? "En camino a cargar recursos." : "Regresando al arca del clan.")
+              : caravanKb
+                ? (outboundMarch ? "En camino a recoger el botín." : "Regresando con el botín.")
+                : (outboundMarch ? "En camino; combate al llegar." : "Regresando de la batalla.")) +
               " Quedan <b id=\"march-countdown\">" + num(eta) + "</b> s.</span>" +
+            (marchResources && resourceTotal(marchResources) > 0
+              ? "<span>Recursos: <b>" + escapeHtml(resourceSummary(marchResources)) + "</b></span>"
+              : "") +
             (!caravanMarch && myMarch.troops && troopSummary(myMarch.troops)
               ? "<span>Tropas enviadas: <b>" + escapeHtml(troopSummary(myMarch.troops)) + "</b></span>"
               : "") +
@@ -4604,6 +4725,8 @@
     if (castleAttackBtn) castleAttackBtn.addEventListener("click", function () { if (castleTarget) castleAttack(castleTarget.id); });
     var castleCollectBtn = document.getElementById("castle-collect-btn");
     if (castleCollectBtn) castleCollectBtn.addEventListener("click", function () { if (castleTarget) startCaravan(castleTarget.id); });
+    var castleResourcesBtn = document.getElementById("castle-resources-btn");
+    if (castleResourcesBtn) castleResourcesBtn.addEventListener("click", function () { if (castleTarget) startResourceCaravan(castleTarget.id); });
     var castleCancelBtn = document.getElementById("castle-cancel-btn");
     if (castleCancelBtn) castleCancelBtn.addEventListener("click", function () {
       castleTarget = null;
@@ -5157,6 +5280,23 @@
         if (!window.confirm("¿Repartir todo el arca del clan según los porcentajes actuales?")) return;
         clanAction("clan_distribute", {}, function (data) {
           return "Arca repartida: " + num((data && data.total) || 0) + " KB.";
+        });
+      });
+    });
+
+    Array.prototype.forEach.call(app.querySelectorAll("[data-clan-distribute-resources]"), function (button) {
+      button.addEventListener("click", function () {
+        if (!window.confirm("¿Repartir todos los recursos del arca según los porcentajes actuales?")) return;
+        clanAction("clan_distribute_resources", {}, function (data) {
+          var distributed = (data && data.distributed) || {};
+          var remaining = (data && data.remaining) || {};
+          var total = resourceTotal(distributed);
+          var left = resourceTotal(remaining);
+          var text = total > 0
+            ? "Recursos repartidos: " + resourceSummary(distributed) + "."
+            : "No se pudo repartir: los almacenes están llenos.";
+          if (left > 0) text += " Quedan en el arca " + resourceSummary(remaining) + ".";
+          return text;
         });
       });
     });

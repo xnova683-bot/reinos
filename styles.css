@@ -2063,6 +2063,33 @@ body.race-enanos .map {
   font-size: 0.68rem;
 }
 
+.clan-resource-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.clan-resource {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.35rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.clan-resource span {
+  color: var(--text-sub);
+  font-size: 0.68rem;
+}
+
+.clan-resource b {
+  color: var(--gold);
+  font-size: 0.95rem;
+}
+
 .clan-forms {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -2714,3 +2741,9 @@ body.race-enanos .map {
 .region.horda .region-label { color: #e3a49d; border-color: rgba(196, 84, 74, 0.6); }
 .region.alianza .region-label { color: #a9c2e3; border-color: rgba(74, 126, 196, 0.6); }
 .region.enanos .region-label { color: #e3d09d; border-color: rgba(196, 162, 74, 0.6); }
+
+@media (max-width: 620px) {
+  .clan-resource-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

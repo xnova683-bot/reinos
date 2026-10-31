@@ -83,7 +83,7 @@ alter table public.road_bends enable row level security;
 create table if not exists public.expeditions (
   id uuid primary key default gen_random_uuid(),
   attacker uuid not null references public.profiles (id) on delete cascade,
-  target_type text not null check (target_type in ('player', 'npc', 'castle', 'castle_loot')),
+  target_type text not null check (target_type in ('player', 'npc', 'castle', 'castle_loot', 'castle_resources')),
   target_id uuid not null,
   target_name text not null,
   from_region integer references public.regions (id) on delete set null,
@@ -108,7 +108,7 @@ create table if not exists public.expeditions (
 
 alter table public.expeditions drop constraint if exists expeditions_target_type_check;
 alter table public.expeditions add constraint expeditions_target_type_check
-  check (target_type in ('player', 'npc', 'castle', 'castle_loot'));
+  check (target_type in ('player', 'npc', 'castle', 'castle_loot', 'castle_resources'));
 
 create index if not exists expeditions_active_idx
   on public.expeditions (status, arrive_at);
@@ -187,9 +187,34 @@ create table if not exists public.castles (
 );
 
 alter table public.castles add column if not exists treasury bigint not null default 0;
+alter table public.castles add column if not exists res_oro bigint not null default 0;
+alter table public.castles add column if not exists res_madera bigint not null default 0;
+alter table public.castles add column if not exists res_comida bigint not null default 0;
+alter table public.castles add column if not exists res_piedra bigint not null default 0;
+alter table public.castles add column if not exists res_at timestamptz not null default now();
 alter table public.castles enable row level security;
 drop policy if exists "castles_read" on public.castles;
 create policy "castles_read" on public.castles for select to authenticated using (true);
+
+create or replace function public.castle_resource_tick()
+returns void
+language sql
+security definer
+set search_path = public
+as $fn$
+  update public.castles c
+  set res_oro = least(10000::bigint, c.res_oro + floor(greatest(0, extract(epoch from (now() - c.res_at))) * 15 / 60)::bigint),
+      res_madera = least(10000::bigint, c.res_madera + floor(greatest(0, extract(epoch from (now() - c.res_at))) * 15 / 60)::bigint),
+      res_comida = least(10000::bigint, c.res_comida + floor(greatest(0, extract(epoch from (now() - c.res_at))) * 15 / 60)::bigint),
+      res_piedra = least(10000::bigint, c.res_piedra + floor(greatest(0, extract(epoch from (now() - c.res_at))) * 15 / 60)::bigint),
+      res_at = now(),
+      updated_at = now()
+  from public.regions r
+  where r.id = c.region_id
+    and not r.locked
+    and c.res_at < now() - interval '10 seconds';
+$fn$;
+revoke all on function public.castle_resource_tick() from public, anon, authenticated;
 
 create table if not exists public.castle_hits (
   attacker uuid not null references public.profiles (id) on delete cascade,
@@ -210,6 +235,10 @@ create table if not exists public.clans (
   tag text not null,
   leader_id uuid not null references public.profiles (id) on delete cascade,
   treasury bigint not null default 0,
+  res_oro bigint not null default 0,
+  res_madera bigint not null default 0,
+  res_comida bigint not null default 0,
+  res_piedra bigint not null default 0,
   tax_rate integer not null default 20 check (tax_rate between 0 and 100),
   shares_ready boolean not null default true,
   last_distributed_at timestamptz,
@@ -218,6 +247,10 @@ create table if not exists public.clans (
 );
 
 alter table public.clans add column if not exists shares_ready boolean not null default true;
+alter table public.clans add column if not exists res_oro bigint not null default 0;
+alter table public.clans add column if not exists res_madera bigint not null default 0;
+alter table public.clans add column if not exists res_comida bigint not null default 0;
+alter table public.clans add column if not exists res_piedra bigint not null default 0;
 
 create unique index if not exists clans_name_key on public.clans (lower(name));
 create unique index if not exists clans_tag_key on public.clans (upper(tag));
@@ -264,6 +297,24 @@ create table if not exists public.clan_distributions (
   shares jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
+
+create or replace function public.guard_clan_resources()
+returns trigger
+language plpgsql
+as $fn$
+begin
+  if coalesce(old.res_oro, 0) + coalesce(old.res_madera, 0)
+     + coalesce(old.res_comida, 0) + coalesce(old.res_piedra, 0) > 0 then
+    raise exception 'resources remain';
+  end if;
+  return old;
+end;
+$fn$;
+
+drop trigger if exists clans_guard_resources on public.clans;
+create trigger clans_guard_resources
+  before delete on public.clans
+  for each row execute function public.guard_clan_resources();
 
 alter table public.clans enable row level security;
 alter table public.clan_members enable row level security;
@@ -461,6 +512,43 @@ as $fn$
     + coalesce((s->'buildings'->>'granero')::numeric, 1) * 1500
     + coalesce((s->'buildings'->>'ayuntamiento')::numeric, 1) * 800;
 $fn$;
+
+create or replace function public.profile_add_resources(p_player uuid, p_resources jsonb)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  v_state jsonb;
+  v_limit numeric;
+  v_res text;
+  v_amount bigint;
+  v_have numeric;
+  v_add bigint;
+  v_given jsonb := '{}'::jsonb;
+  v_left jsonb := '{}'::jsonb;
+begin
+  select state into v_state from public.profiles where id = p_player for update;
+  if not found then raise exception 'profile missing'; end if;
+
+  foreach v_res in array array['oro', 'madera', 'comida', 'piedra'] loop
+    v_amount := greatest(0, coalesce((p_resources->>v_res)::bigint, 0));
+    v_have := coalesce((v_state->'res'->>v_res)::numeric, 0);
+    v_limit := public.state_storage(v_state);
+    v_add := least(v_amount, greatest(0, floor(v_limit - v_have)))::bigint;
+    if v_add > 0 then
+      v_state := jsonb_set(v_state, array['res', v_res], to_jsonb(v_have + v_add), true);
+    end if;
+    v_given := v_given || jsonb_build_object(v_res, v_add);
+    v_left := v_left || jsonb_build_object(v_res, v_amount - v_add);
+  end loop;
+
+  update public.profiles set state = v_state, updated_at = now() where id = p_player;
+  return jsonb_build_object('given', v_given, 'left', v_left);
+end;
+$fn$;
+revoke all on function public.profile_add_resources(uuid, jsonb) from public, anon, authenticated;
 
 create or replace function public.region_hops(p_from integer, p_to integer)
 returns integer
@@ -764,6 +852,7 @@ begin
   end if;
 
   perform public.resolve_expeditions();
+  perform public.castle_resource_tick();
 
   select jsonb_build_object(
     'me', coalesce((
@@ -817,12 +906,22 @@ begin
         'id', c.id, 'region', c.region_id, 'name', c.name,
         'x', c.x, 'y', c.y, 'power', c.power, 'loot', c.loot,
         'treasury', c.treasury,
+        'res_oro', c.res_oro,
+        'res_madera', c.res_madera,
+        'res_comida', c.res_comida,
+        'res_piedra', c.res_piedra,
+        'res_cap', 10000,
+        'res_rate', 15,
+        'clan_id', cm.clan_id,
+        'clan_tag', cl.tag,
         'owner', c.owner,
         'owner_name', coalesce(nullif(p.username, ''), 'Señor sin nombre'),
         'defense', greatest(c.power, coalesce(public.state_power(p.state) * 1.15, 0))
       ) order by c.region_id)
       from public.castles c
       left join public.profiles p on p.id = c.owner
+      left join public.clan_members cm on cm.player_id = c.owner
+      left join public.clans cl on cl.id = cm.clan_id
     ), '[]'::jsonb),
     'npcs', coalesce((
       select jsonb_agg(jsonb_build_object(
@@ -1466,6 +1565,13 @@ declare
   loot_amount bigint;
   loot_net bigint;
   clan_tax bigint;
+  res_clan uuid;
+  res_payload jsonb;
+  res_result jsonb;
+  res_given jsonb;
+  res_left jsonb;
+  res_total bigint;
+  res_rem bigint;
   changed integer := 0;
 begin
   for e in
@@ -1484,7 +1590,7 @@ begin
     end if;
 
     begin
-      if e.target_type = 'castle_loot' then
+      if e.target_type in ('castle_loot', 'castle_resources') then
         res := coalesce(e.result, '{}'::jsonb);
       elsif e.target_type = 'player' then
         res := public.resolve_rival_battle(
@@ -1569,7 +1675,7 @@ begin
         where id = e.attacker;
     end if;
 
-    if e.target_type = 'castle_loot' then
+    if e.target_type in ('castle_loot', 'castle_resources') then
       update public.expeditions
         set status = 'returning',
             result = res,
@@ -1631,6 +1737,68 @@ begin
           || case when clan_tax > 0 then ' Impuesto de clan: ' || clan_tax || ' KB.' else '' end
       );
     end if;
+    changed := changed + 1;
+  end loop;
+
+  for e in
+    select * from public.expeditions
+    where status = 'returning' and target_type = 'castle_resources' and return_at <= now()
+    order by return_at
+    for update skip locked
+  loop
+    res_payload := coalesce(e.result->'resources', '{}'::jsonb);
+    res_clan := nullif(e.result->>'clan_id', '')::uuid;
+    if res_clan is not null and exists (select 1 from public.clans where id = res_clan) then
+      update public.clans
+        set res_oro = res_oro + coalesce((res_payload->>'oro')::bigint, 0),
+            res_madera = res_madera + coalesce((res_payload->>'madera')::bigint, 0),
+            res_comida = res_comida + coalesce((res_payload->>'comida')::bigint, 0),
+            res_piedra = res_piedra + coalesce((res_payload->>'piedra')::bigint, 0),
+            updated_at = now()
+        where id = res_clan;
+      res_given := res_payload;
+      res_left := jsonb_build_object('oro', 0, 'madera', 0, 'comida', 0, 'piedra', 0);
+      insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+      values (
+        res_clan, e.attacker, 'caravan', 0,
+        'Caravana de recursos: ' || coalesce((res_given->>'oro')::bigint, 0) || ' oro · ' ||
+          coalesce((res_given->>'madera')::bigint, 0) || ' madera · ' ||
+          coalesce((res_given->>'comida')::bigint, 0) || ' comida · ' ||
+          coalesce((res_given->>'piedra')::bigint, 0) || ' piedra'
+      );
+    else
+      res_result := public.profile_add_resources(e.attacker, res_payload);
+      res_given := coalesce(res_result->'given', '{}'::jsonb);
+      res_left := coalesce(res_result->'left', '{}'::jsonb);
+    end if;
+
+    res_total := coalesce((res_given->>'oro')::bigint, 0) + coalesce((res_given->>'madera')::bigint, 0)
+      + coalesce((res_given->>'comida')::bigint, 0) + coalesce((res_given->>'piedra')::bigint, 0);
+    res_rem := coalesce((res_left->>'oro')::bigint, 0) + coalesce((res_left->>'madera')::bigint, 0)
+      + coalesce((res_left->>'comida')::bigint, 0) + coalesce((res_left->>'piedra')::bigint, 0);
+
+    update public.expeditions
+      set result = coalesce(result, '{}'::jsonb) || jsonb_build_object(
+        'delivered', res_given,
+        'left', res_left,
+        'text', 'Caravana de recursos entregó ' || coalesce((res_given->>'oro')::bigint, 0) || ' oro, ' ||
+          coalesce((res_given->>'madera')::bigint, 0) || ' madera, ' ||
+          coalesce((res_given->>'comida')::bigint, 0) || ' comida y ' ||
+          coalesce((res_given->>'piedra')::bigint, 0) || ' piedra de ' || e.target_name || '.' ||
+          case when res_rem > 0 then ' ' || res_rem || ' recursos quedaron sin espacio.' else '' end
+      )
+      where id = e.id;
+
+    insert into public.world_events (attacker, target, winner, loot, text)
+    values (
+      (select coalesce(nullif(p.username, ''), 'Señor sin nombre') from public.profiles p where p.id = e.attacker),
+      e.target_name,
+      'attacker',
+      least(res_total, 2147483647)::integer,
+      'Caravana de ' || (select coalesce(nullif(p.username, ''), 'un señor') from public.profiles p where p.id = e.attacker)
+        || ' extrajo ' || res_total || ' recursos de ' || e.target_name || '.'
+        || case when res_rem > 0 then ' ' || res_rem || ' quedaron sin espacio.' else '' end
+    );
     changed := changed + 1;
   end loop;
 
@@ -1941,6 +2109,151 @@ $fn$;
 
 grant execute on function public.start_caravan(uuid) to authenticated;
 
+create or replace function public.start_castle_resource_caravan(p_castle_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  a public.profiles%rowtype;
+  c public.castles%rowtype;
+  v_owner_clan uuid;
+  v_my_clan uuid;
+  v_resources jsonb;
+  v_total bigint;
+  path jsonb;
+  dist numeric;
+  move_speed numeric := 1;
+  secs integer;
+  start_at timestamptz := now();
+  row_out public.expeditions%rowtype;
+  hops integer := 0;
+  v_open boolean := false;
+  elapsed numeric := 0;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+
+  perform public.resolve_expeditions();
+  perform public.castle_resource_tick();
+
+  select * into a from public.profiles where id = me for update;
+  if not found then raise exception 'profile missing'; end if;
+  if a.region_id is null or a.x is null or a.y is null then raise exception 'no village'; end if;
+
+  select * into c from public.castles where id = p_castle_id for update;
+  if not found then raise exception 'castle not found'; end if;
+  if c.x is null or c.y is null then raise exception 'target not found'; end if;
+
+  select not r.locked into v_open from public.regions r where r.id = c.region_id;
+
+  select cm.clan_id into v_owner_clan
+  from public.clan_members cm
+  where cm.player_id = c.owner;
+  if v_owner_clan is null then raise exception 'castle has no clan'; end if;
+
+  select cm.clan_id into v_my_clan
+  from public.clan_members cm
+  where cm.player_id = me;
+  if v_my_clan is null or v_my_clan is distinct from v_owner_clan then
+    raise exception 'not your clan';
+  end if;
+
+  if exists (
+    select 1 from public.regions r
+    where r.id = c.region_id
+      and r.locked
+      and r.id is distinct from a.region_id
+  ) then raise exception 'region locked'; end if;
+
+  if exists (
+    select 1 from public.expeditions e
+    where e.attacker = me and e.status in ('outbound', 'returning')
+  ) then raise exception 'expedition active'; end if;
+
+  if v_open then
+    elapsed := greatest(0, extract(epoch from (now() - c.res_at)));
+    if elapsed > 0 then
+      c.res_oro := least(10000::bigint, c.res_oro + floor(elapsed * 15 / 60)::bigint);
+      c.res_madera := least(10000::bigint, c.res_madera + floor(elapsed * 15 / 60)::bigint);
+      c.res_comida := least(10000::bigint, c.res_comida + floor(elapsed * 15 / 60)::bigint);
+      c.res_piedra := least(10000::bigint, c.res_piedra + floor(elapsed * 15 / 60)::bigint);
+    end if;
+  end if;
+
+  v_resources := jsonb_build_object(
+    'oro', c.res_oro,
+    'madera', c.res_madera,
+    'comida', c.res_comida,
+    'piedra', c.res_piedra
+  );
+  v_total := c.res_oro + c.res_madera + c.res_comida + c.res_piedra;
+  if v_total <= 0 then raise exception 'empty resources'; end if;
+
+  update public.castles
+    set res_oro = 0, res_madera = 0, res_comida = 0, res_piedra = 0,
+        res_at = now(), updated_at = now()
+    where id = c.id;
+
+  select coalesce(least(10, greatest(0.1, s.movement_speed)), 1)
+    into move_speed
+    from public.world_settings s where s.id = 1;
+  move_speed := coalesce(move_speed, 1);
+
+  hops := public.region_hops(a.region_id, c.region_id);
+  path := public.expedition_path(
+    a.region_id, c.region_id,
+    a.x, a.y,
+    c.x, c.y
+  );
+  dist := public.expedition_distance(path);
+  secs := greatest(10, least(240, round(dist / (45 * move_speed))::integer));
+  if hops > 0 then
+    secs := least(240, greatest(10, round(secs * (1 + 0.5 * hops))::integer));
+  end if;
+
+  insert into public.expeditions (
+    attacker, target_type, target_id, target_name,
+    from_region, to_region, from_x, from_y, to_x, to_y,
+    path, status, depart_at, arrive_at, return_at, travel_seconds, speed, troops, result
+  ) values (
+    me, 'castle_resources', c.id, c.name,
+    a.region_id, c.region_id, a.x, a.y, c.x, c.y,
+    path, 'outbound', start_at,
+    start_at + make_interval(secs => secs),
+    start_at + make_interval(secs => secs * 2),
+    secs, move_speed, null,
+    jsonb_build_object(
+      'win', true,
+      'resources', v_resources,
+      'clan_id', v_owner_clan,
+      'text', 'Caravana cargó recursos de ' || c.name || '.'
+    )
+  )
+  returning * into row_out;
+
+  return jsonb_build_object(
+    'ok', true,
+    'id', row_out.id,
+    'target', c.name,
+    'target_type', 'castle_resources',
+    'resources', v_resources,
+    'total', v_total,
+    'path', row_out.path,
+    'travel_seconds', row_out.travel_seconds,
+    'depart_at', row_out.depart_at,
+    'arrive_at', row_out.arrive_at,
+    'return_at', row_out.return_at,
+    'move_speed', move_speed,
+    'hops', hops,
+    'distance', round(dist, 3)
+  );
+end;
+$fn$;
+
+grant execute on function public.start_castle_resource_caravan(uuid) to authenticated;
+
 -- ============================================================
 -- Clanes: estado, invitaciones, arca y reparto
 -- ============================================================
@@ -1957,6 +2270,12 @@ as $fn$
     'tag', c.tag,
     'leader', c.leader_id,
     'treasury', c.treasury,
+    'resources', jsonb_build_object(
+      'oro', c.res_oro,
+      'madera', c.res_madera,
+      'comida', c.res_comida,
+      'piedra', c.res_piedra
+    ),
     'tax_rate', c.tax_rate,
     'shares_ready', c.shares_ready,
     'last_distributed_at', c.last_distributed_at,
@@ -2461,6 +2780,132 @@ begin
 end;
 $fn$;
 grant execute on function public.clan_distribute() to authenticated;
+
+create or replace function public.clan_distribute_resources()
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $fn$
+declare
+  me uuid := auth.uid();
+  v_clan uuid;
+  v_leader uuid;
+  v_clanrow public.clans%rowtype;
+  v_p uuid;
+  v_member record;
+  v_sum integer;
+  v_total jsonb;
+  v_remainders jsonb := '{}'::jsonb;
+  v_amounts jsonb;
+  v_distributed jsonb := '{"oro":0,"madera":0,"comida":0,"piedra":0}'::jsonb;
+  v_remaining jsonb := '{"oro":0,"madera":0,"comida":0,"piedra":0}'::jsonb;
+  v_result jsonb;
+  v_res text;
+  v_base bigint;
+  v_amount bigint;
+  v_paid bigint;
+  v_detail text;
+begin
+  if me is null then raise exception 'not authenticated'; end if;
+  select c.id, c.leader_id into v_clan, v_leader
+  from public.clan_members cm
+  join public.clans c on c.id = cm.clan_id
+  where cm.player_id = me;
+  if v_clan is null then raise exception 'no clan'; end if;
+  if v_leader <> me then raise exception 'not leader'; end if;
+
+  for v_p in select player_id from public.clan_members where clan_id = v_clan order by player_id loop
+    perform 1 from public.profiles where id = v_p for update;
+  end loop;
+
+  select * into v_clanrow from public.clans where id = v_clan for update;
+  if not found then raise exception 'no clan'; end if;
+  perform 1 from public.clan_members where clan_id = v_clan for update;
+
+  select coalesce(sum(share_pct), 0) into v_sum from public.clan_members where clan_id = v_clan;
+  if v_sum <> 100 then raise exception 'shares must total 100'; end if;
+  if not v_clanrow.shares_ready then raise exception 'shares not ready'; end if;
+
+  v_total := jsonb_build_object(
+    'oro', v_clanrow.res_oro,
+    'madera', v_clanrow.res_madera,
+    'comida', v_clanrow.res_comida,
+    'piedra', v_clanrow.res_piedra
+  );
+  if v_clanrow.res_oro + v_clanrow.res_madera + v_clanrow.res_comida + v_clanrow.res_piedra <= 0 then
+    raise exception 'empty resources';
+  end if;
+
+  foreach v_res in array array['oro', 'madera', 'comida', 'piedra'] loop
+    v_paid := 0;
+    for v_member in
+      select player_id, share_pct from public.clan_members where clan_id = v_clan
+    loop
+      v_paid := v_paid + floor((v_total->>v_res)::bigint * v_member.share_pct / 100.0)::bigint;
+    end loop;
+    v_remainders := v_remainders || jsonb_build_object(v_res, (v_total->>v_res)::bigint - v_paid);
+  end loop;
+
+  for v_member in
+    select player_id, share_pct from public.clan_members where clan_id = v_clan order by player_id
+  loop
+    v_amounts := '{}'::jsonb;
+    foreach v_res in array array['oro', 'madera', 'comida', 'piedra'] loop
+      v_base := floor((v_total->>v_res)::bigint * v_member.share_pct / 100.0)::bigint;
+      v_amount := v_base + case
+        when v_member.player_id = v_leader then (v_remainders->>v_res)::bigint
+        else 0
+      end;
+      v_amounts := v_amounts || jsonb_build_object(v_res, v_amount);
+    end loop;
+
+    v_result := public.profile_add_resources(v_member.player_id, v_amounts);
+    foreach v_res in array array['oro', 'madera', 'comida', 'piedra'] loop
+      v_distributed := jsonb_set(
+        v_distributed,
+        array[v_res],
+        to_jsonb(coalesce((v_distributed->>v_res)::bigint, 0)
+          + coalesce((v_result->'given'->>v_res)::bigint, 0)),
+        true
+      );
+      v_remaining := jsonb_set(
+        v_remaining,
+        array[v_res],
+        to_jsonb(coalesce((v_remaining->>v_res)::bigint, 0)
+          + coalesce((v_result->'left'->>v_res)::bigint, 0)),
+        true
+      );
+    end loop;
+  end loop;
+
+  update public.clans
+    set res_oro = coalesce((v_remaining->>'oro')::bigint, 0),
+        res_madera = coalesce((v_remaining->>'madera')::bigint, 0),
+        res_comida = coalesce((v_remaining->>'comida')::bigint, 0),
+        res_piedra = coalesce((v_remaining->>'piedra')::bigint, 0),
+        updated_at = now()
+    where id = v_clan;
+
+  v_detail := 'Reparto de recursos: ' || coalesce((v_distributed->>'oro')::bigint, 0) || ' oro · ' ||
+    coalesce((v_distributed->>'madera')::bigint, 0) || ' madera · ' ||
+    coalesce((v_distributed->>'comida')::bigint, 0) || ' comida · ' ||
+    coalesce((v_distributed->>'piedra')::bigint, 0) || ' piedra';
+  if coalesce((v_remaining->>'oro')::bigint, 0) + coalesce((v_remaining->>'madera')::bigint, 0)
+     + coalesce((v_remaining->>'comida')::bigint, 0) + coalesce((v_remaining->>'piedra')::bigint, 0) > 0 then
+    v_detail := v_detail || ' · Quedó en el arca por falta de espacio';
+  end if;
+  insert into public.clan_ledger (clan_id, player_id, kind, amount, detail)
+  values (v_clan, me, 'resources', 0, v_detail);
+
+  return jsonb_build_object(
+    'ok', true,
+    'distributed', v_distributed,
+    'remaining', v_remaining
+  );
+end;
+$fn$;
+grant execute on function public.clan_distribute_resources() to authenticated;
 
 create or replace function public.clan_disband()
 returns jsonb
@@ -3123,6 +3568,19 @@ set search_path = public
 as $fn$
 begin
   if not public.is_admin() then raise exception 'not admin'; end if;
+  if is_locked then
+    update public.castles c
+      set res_oro = least(10000::bigint, c.res_oro + floor(greatest(0, extract(epoch from (now() - c.res_at))) * 15 / 60)::bigint),
+          res_madera = least(10000::bigint, c.res_madera + floor(greatest(0, extract(epoch from (now() - c.res_at))) * 15 / 60)::bigint),
+          res_comida = least(10000::bigint, c.res_comida + floor(greatest(0, extract(epoch from (now() - c.res_at))) * 15 / 60)::bigint),
+          res_piedra = least(10000::bigint, c.res_piedra + floor(greatest(0, extract(epoch from (now() - c.res_at))) * 15 / 60)::bigint),
+          res_at = now(),
+          updated_at = now()
+      where c.region_id = rid
+        and not exists (select 1 from public.regions r where r.id = rid and r.locked);
+  else
+    update public.castles set res_at = now() where region_id = rid;
+  end if;
   update public.regions set locked = is_locked, updated_at = now() where id = rid;
   if not found then raise exception 'region not found'; end if;
   return jsonb_build_object('ok', true, 'locked', is_locked);
